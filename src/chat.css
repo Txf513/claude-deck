@@ -1404,6 +1404,31 @@ body,
   color: var(--text-muted);
 }
 
+.cd-search-kind,
+.cd-search-tool {
+  display: inline-flex;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.cd-search-kind {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--accent);
+}
+
+.cd-search-tool {
+  background: var(--bg-button-pill);
+  color: var(--text-secondary);
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .cd-search-snippet {
   font-size: 12.5px;
   color: var(--text-secondary);
@@ -1735,9 +1760,80 @@ body,
   gap: 4px;
 }
 
+.cd-rightpanel-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.cd-rightpanel-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: var(--bg-soft);
+}
+
+.cd-rightpanel-stat-label {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.cd-rightpanel-stat-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.cd-rightpanel-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.cd-rightpanel-badge.is-idle {
+  background: var(--bg-button-pill);
+  color: var(--text-secondary);
+}
+
+.cd-rightpanel-badge.is-thinking,
+.cd-rightpanel-badge.is-streaming {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+
+.cd-rightpanel-badge.is-error {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
+
 .cd-rightpanel-title {
   font-size: 12.5px;
   color: var(--text-secondary);
+}
+
+.cd-rightpanel-error {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.cd-rightpanel-muted {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
 }
 
 .cd-rightpanel-empty {

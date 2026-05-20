@@ -8,7 +8,7 @@ import { ChevronDown, ChevronRight } from "./Icons";
 import { LocalImage } from "./LocalImage";
 import { Lightbox } from "./Lightbox";
 import { writeTextFile } from "../lib/config";
-import type { ChatMessage, ToolCall } from "../hooks/useChats";
+import type { ChatMessage, ToolCall } from "../lib/chatTypes";
 
 type Props = {
   title: string;
@@ -208,7 +208,11 @@ function ThinkingDots() {
 
 function Bubble({ message, onImageClick }: { message: ChatMessage; onImageClick: (path: string) => void }) {
   if (message.kind === "tool") {
-    return <ToolCard tool={message.tool} />;
+    return (
+      <div className="cd-row cd-row-tool" data-msg-id={message.id}>
+        <ToolCard tool={message.tool} />
+      </div>
+    );
   }
   if (message.role === "user") {
     const { text, images, files } = extractAttachments(message.text);

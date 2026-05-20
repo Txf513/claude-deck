@@ -1,19 +1,31 @@
 import { useMemo } from "react";
-import { TerminalIcon, InfoIcon } from "./Icons";
-import type { ChatMessage } from "../hooks/useChats";
+import { TerminalIcon } from "./Icons";
+import type { ChatMessage, ConvStatus, UsageStats } from "../lib/chatTypes";
+import { buildInspectorData } from "../lib/inspector";
 
 type Props = {
   visible: boolean;
   messages: ChatMessage[];
+  status: ConvStatus;
+  error: string | null;
+  stderr: string[];
+  usage: UsageStats;
   onToggleTerminal?: () => void;
 };
 
-export function OutputPanel({ visible, messages, onToggleTerminal }: Props) {
-  const tools = useMemo(
-    () => messages.filter((m) => m.kind === "tool"),
-    [messages]
+export function OutputPanel({
+  visible,
+  messages,
+  status,
+  error,
+  stderr,
+  usage,
+  onToggleTerminal,
+}: Props) {
+  const inspector = useMemo(
+    () => buildInspectorData({ messages, status, error, stderr, usage }),
+    [messages, status, error, stderr, usage]
   );
-  const sources = useMemo(() => collectSources(messages), [messages]);
 
   return (
     <aside className={`cd-rightpanel ${visible ? "" : "collapsed"}`}>
@@ -25,40 +37,69 @@ export function OutputPanel({ visible, messages, onToggleTerminal }: Props) {
         >
           <TerminalIcon size={16} />
         </button>
-        <button
-          className="cd-icon-btn cd-icon-btn-active"
-          title="详情（即将推出）"
-          disabled
-        >
-          <InfoIcon size={16} />
-        </button>
       </div>
       {visible && (
         <div className="cd-rightpanel-card">
           <div className="cd-rightpanel-section">
-            <div className="cd-rightpanel-title">工具调用</div>
-            {tools.length === 0 ? (
-              <div className="cd-rightpanel-empty">本轮暂无工具调用</div>
+            <div className="cd-rightpanel-title">当前概览</div>
+            <div className="cd-rightpanel-summary-grid">
+              <div className="cd-rightpanel-stat">
+                <span className="cd-rightpanel-stat-label">状态</span>
+                <span className={`cd-rightpanel-badge is-${inspector.summary.status}`}>
+                  {statusLabel(inspector.summary.status)}
+                </span>
+              </div>
+              <div className="cd-rightpanel-stat">
+                <span className="cd-rightpanel-stat-label">工具</span>
+                <span className="cd-rightpanel-stat-value">
+                  {inspector.summary.toolCount}
+                </span>
+              </div>
+              <div className="cd-rightpanel-stat">
+                <span className="cd-rightpanel-stat-label">文件</span>
+                <span className="cd-rightpanel-stat-value">
+                  {inspector.summary.relatedFileCount}
+                </span>
+              </div>
+              <div className="cd-rightpanel-stat">
+                <span className="cd-rightpanel-stat-label">Tokens</span>
+                <span className="cd-rightpanel-stat-value">
+                  {formatTokens(inspector.summary.inputTokens + inspector.summary.outputTokens)}
+                </span>
+              </div>
+            </div>
+            {inspector.summary.latestError && (
+              <div className="cd-rightpanel-error">{inspector.summary.latestError}</div>
+            )}
+            {inspector.summary.stderrCount > 0 && (
+              <div className="cd-rightpanel-muted">
+                CLI stderr {inspector.summary.stderrCount} 行
+              </div>
+            )}
+          </div>
+          <div className="cd-rightpanel-section">
+            <div className="cd-rightpanel-title">工具步骤</div>
+            {inspector.tools.length === 0 ? (
+              <div className="cd-rightpanel-empty">当前暂无工具步骤</div>
             ) : (
               <ul className="cd-rightpanel-list">
-                {tools.map((m) => {
-                  if (m.kind !== "tool") return null;
-                  const t = m.tool;
+                {inspector.tools.map((message) => {
+                  const tool = message.tool;
                   const dotColor =
-                    t.status === "running"
+                    tool.status === "running"
                       ? "var(--accent)"
-                      : t.status === "error"
+                      : tool.status === "error"
                       ? "var(--danger)"
                       : "var(--success)";
                   return (
-                    <li key={m.id} className="cd-rightpanel-item">
+                    <li key={message.id} className="cd-rightpanel-item">
                       <span
                         className="cd-rightpanel-dot"
                         style={{ background: dotColor }}
                       />
-                      <span className="cd-rightpanel-item-name">{t.name}</span>
+                      <span className="cd-rightpanel-item-name">{tool.name}</span>
                       <span className="cd-rightpanel-item-summary">
-                        {summary(t)}
+                        {summary(tool)}
                       </span>
                     </li>
                   );
@@ -68,11 +109,11 @@ export function OutputPanel({ visible, messages, onToggleTerminal }: Props) {
           </div>
           <div className="cd-rightpanel-section">
             <div className="cd-rightpanel-title">涉及文件</div>
-            {sources.length === 0 ? (
+            {inspector.relatedFiles.length === 0 ? (
               <div className="cd-rightpanel-empty">暂无</div>
             ) : (
               <ul className="cd-rightpanel-list">
-                {sources.map((s) => (
+                {inspector.relatedFiles.map((s) => (
                   <li key={s} className="cd-rightpanel-item cd-rightpanel-mono">
                     {s}
                   </li>
@@ -107,24 +148,22 @@ function summary(t: { input?: unknown; partialJson: string }): string {
   return "";
 }
 
-function collectSources(messages: ChatMessage[]): string[] {
-  const set = new Set<string>();
-  for (const m of messages) {
-    if (m.kind !== "tool") continue;
-    const obj =
-      m.tool.input ??
-      (() => {
-        try {
-          return JSON.parse(m.tool.partialJson);
-        } catch {
-          return undefined;
-        }
-      })();
-    if (!obj || typeof obj !== "object") continue;
-    const o = obj as Record<string, unknown>;
-    if (typeof o.file_path === "string") set.add(o.file_path);
-    if (typeof o.path === "string" && (m.tool.name === "Read" || m.tool.name === "Edit"))
-      set.add(o.path);
+function statusLabel(status: ConvStatus): string {
+  switch (status) {
+    case "thinking":
+      return "思考中";
+    case "streaming":
+      return "输出中";
+    case "error":
+      return "失败";
+    default:
+      return "空闲";
   }
-  return Array.from(set).slice(0, 12);
+}
+
+function formatTokens(value: number): string {
+  if (value >= 1000) {
+    return `${(value / 1000).toFixed(value >= 10000 ? 0 : 1)}k`;
+  }
+  return String(value);
 }

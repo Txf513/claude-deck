@@ -67,18 +67,23 @@ export async function onClaudeDone(
   return await listen<ClaudeDonePayload>(EVENT_DONE, (e) => cb(e.payload));
 }
 
-export type ReplayMessage = {
+export type ReplayEntry = {
   id: string;
-  role: "user" | "assistant" | string;
+  kind: "text" | "tool_call" | "tool_result" | string;
+  role: "user" | "assistant" | "tool" | string;
   text: string;
   timestamp: string | null;
   tool_name: string | null;
+  tool_use_id: string | null;
+  tool_input_json: string | null;
+  tool_output_text: string | null;
+  is_error: boolean;
   is_meta: boolean;
 };
 
 export type ReplayResult = {
   session_id: string | null;
-  messages: ReplayMessage[];
+  entries: ReplayEntry[];
   cwd: string | null;
   total_input_tokens: number;
   total_output_tokens: number;

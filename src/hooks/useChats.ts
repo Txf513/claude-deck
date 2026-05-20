@@ -6,57 +6,12 @@ import {
   onClaudeEvent,
   onClaudeStderr,
   parseStreamLine,
+  type ReplayResult,
   type Effort,
   type PermissionMode,
-  type ReplayMessage,
 } from "../lib/claude";
-
-export type ToolCall = {
-  toolUseId: string;
-  name: string;
-  partialJson: string;
-  input: unknown;
-  output: string | null;
-  isError: boolean;
-  status: "running" | "done" | "error";
-};
-
-export type ChatMessage =
-  | {
-      kind: "text";
-      id: string;
-      role: "user" | "assistant";
-      text: string;
-      pending?: boolean;
-      startedAt?: number;
-      durationMs?: number;
-    }
-  | {
-      kind: "tool";
-      id: string;
-      toolUseId: string;
-      role: "tool";
-      tool: ToolCall;
-    };
-
-export type ConvStatus = "idle" | "thinking" | "streaming" | "error";
-
-export type UsageStats = {
-  // Last turn (used for context-window gauge)
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheCreationTokens: number;
-  contextWindow: number;
-  // CLI-reported cumulative cost for this session
-  costUsd: number;
-  // Cumulative across all turns in this conversation
-  totalInputTokens: number;
-  totalOutputTokens: number;
-  totalCacheReadTokens: number;
-  totalCacheCreationTokens: number;
-  turnCount: number;
-};
+import type { ChatMessage, ConvStatus, UsageStats } from "../lib/chatTypes";
+import { normalizeReplay } from "../lib/replay";
 
 export type ChatTab = {
   convId: string;
@@ -469,44 +424,16 @@ export function useChats(notify: Notify = tryNotify) {
 
   function loadReplay(
     convId: string,
-    replay: {
-      session_id: string | null;
-      messages: ReplayMessage[];
-      total_input_tokens?: number;
-      total_output_tokens?: number;
-      total_cache_read_tokens?: number;
-      total_cache_creation_tokens?: number;
-      context_window?: number;
-      turn_count?: number;
-      last_input_tokens?: number;
-      last_output_tokens?: number;
-      last_cache_read_tokens?: number;
-      last_cache_creation_tokens?: number;
-    }
+    replay: ReplayResult
   ) {
-    const filtered = replay.messages
-      .filter((m) => !m.is_meta)
-      .filter(
-        (m) =>
-          !(
-            m.role === "user" &&
-            (m.text.startsWith("<local-command-") ||
-              m.text.startsWith("<command-name>") ||
-              m.text.startsWith("<system-reminder>"))
-          )
-      );
-    const out: ChatMessage[] = filtered.map((m) => ({
-      kind: "text",
-      id: m.id,
-      role: m.role === "assistant" ? "assistant" : "user",
-      text: m.text,
-    }));
+    const normalized = normalizeReplay(replay);
     patch(convId, (t) => ({
       ...t,
       sessionId: replay.session_id,
-      messages: out,
+      messages: normalized.messages,
       status: "idle",
       error: null,
+      stderr: normalized.stderr,
       usage: {
         inputTokens: replay.last_input_tokens ?? 0,
         outputTokens: replay.last_output_tokens ?? 0,

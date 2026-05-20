@@ -97,6 +97,14 @@ export function SearchOverlay({ open, onClose, onPick }: Props) {
                 >
                   {hit.role === "user" ? "U" : "A"}
                 </span>
+                {hit.entry_kind && (
+                  <span className="cd-search-kind">
+                    {entryKindLabel(hit.entry_kind)}
+                  </span>
+                )}
+                {hit.tool_name && (
+                  <span className="cd-search-tool">{hit.tool_name}</span>
+                )}
                 <span className="cd-search-mtime">{relative(hit.mtime_ms)}</span>
               </div>
               <div className="cd-search-snippet">
@@ -144,4 +152,17 @@ function highlight(text: string, q: string) {
     i = found + q.length;
   }
   return out;
+}
+
+function entryKindLabel(kind: string): string {
+  switch (kind) {
+    case "tool_call":
+      return "Tool";
+    case "tool_result":
+      return "Result";
+    case "text":
+      return "Text";
+    default:
+      return kind;
+  }
 }

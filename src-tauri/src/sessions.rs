@@ -286,9 +286,25 @@ pub struct ReplayMessage {
 }
 
 #[derive(Clone, Serialize)]
+pub struct ReplayEntry {
+    pub id: String,
+    pub kind: String,
+    pub role: String,
+    pub text: String,
+    pub timestamp: Option<String>,
+    pub tool_name: Option<String>,
+    pub tool_use_id: Option<String>,
+    pub tool_input_json: Option<String>,
+    pub tool_output_text: Option<String>,
+    pub is_error: bool,
+    pub is_meta: bool,
+}
+
+#[derive(Clone, Serialize)]
 pub struct ReplayResult {
     pub session_id: Option<String>,
     pub messages: Vec<ReplayMessage>,
+    pub entries: Vec<ReplayEntry>,
     pub cwd: Option<String>,
     pub total_input_tokens: u64,
     pub total_output_tokens: u64,
@@ -314,6 +330,8 @@ pub struct SearchHit {
     pub timestamp: Option<String>,
     pub mtime_ms: u64,
     pub uuid: Option<String>,
+    pub entry_kind: Option<String>,
+    pub tool_name: Option<String>,
 }
 
 #[tauri::command]
@@ -387,11 +405,9 @@ pub fn search_sessions(query: String, limit: Option<usize>) -> Vec<SearchHit> {
                 if is_meta {
                     continue;
                 }
-                let text = v
-                    .get("message")
-                    .and_then(|m| m.get("content"))
-                    .and_then(extract_text)
-                    .unwrap_or_default();
+                let (text, tool_name, entry_kind) = extract_search_content(
+                    v.get("message").and_then(|m| m.get("content")),
+                );
                 if text.is_empty() {
                     continue;
                 }
@@ -418,6 +434,8 @@ pub fn search_sessions(query: String, limit: Option<usize>) -> Vec<SearchHit> {
                     timestamp,
                     mtime_ms,
                     uuid,
+                    entry_kind,
+                    tool_name,
                 });
                 if hits.len() >= cap {
                     hits.sort_by(|a, b| b.mtime_ms.cmp(&a.mtime_ms));
@@ -572,6 +590,190 @@ fn build_snippet(text: &str, q: &str) -> String {
     out.replace('\n', " ").replace('\r', " ").trim().to_string()
 }
 
+fn extract_search_content(content: Option<&Value>) -> (String, Option<String>, Option<String>) {
+    let Some(content) = content else {
+        return (String::new(), None, None);
+    };
+    match content {
+        Value::String(s) => (s.clone(), None, Some("text".into())),
+        Value::Array(items) => {
+            let mut text = String::new();
+            let mut tool_name: Option<String> = None;
+            let mut entry_kind: Option<String> = None;
+            for item in items {
+                let item_ty = item.get("type").and_then(|x| x.as_str()).unwrap_or("");
+                match item_ty {
+                    "text" => {
+                        if let Some(t) = item.get("text").and_then(|x| x.as_str()) {
+                            if !text.is_empty() {
+                                text.push('\n');
+                            }
+                            text.push_str(t);
+                            entry_kind.get_or_insert_with(|| "text".into());
+                        }
+                    }
+                    "tool_use" => {
+                        tool_name = item.get("name").and_then(|x| x.as_str()).map(String::from);
+                        entry_kind = Some("tool_call".into());
+                    }
+                    "tool_result" => {
+                        if let Some(s) = tool_result_text(item.get("content")) {
+                            if !text.is_empty() {
+                                text.push('\n');
+                            }
+                            text.push_str(&s);
+                        }
+                        if entry_kind.is_none() {
+                            entry_kind = Some("tool_result".into());
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            (text, tool_name, entry_kind)
+        }
+        _ => (String::new(), None, None),
+    }
+}
+
+fn tool_result_text(content: Option<&Value>) -> Option<String> {
+    match content {
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(Value::Array(items)) => {
+            let mut out = String::new();
+            for item in items {
+                if let Some(s) = item.as_str() {
+                    if !out.is_empty() {
+                        out.push('\n');
+                    }
+                    out.push_str(s);
+                    continue;
+                }
+                if let Some(t) = item.get("text").and_then(|x| x.as_str()) {
+                    if !out.is_empty() {
+                        out.push('\n');
+                    }
+                    out.push_str(t);
+                }
+            }
+            if out.is_empty() { None } else { Some(out) }
+        }
+        _ => None,
+    }
+}
+
+fn replay_entries_from_content(
+    role: &str,
+    base_id: &str,
+    timestamp: Option<String>,
+    content: Option<&Value>,
+    is_meta: bool,
+) -> (String, Option<String>, Vec<ReplayEntry>) {
+    let Some(content) = content else {
+        return (String::new(), None, vec![]);
+    };
+    match content {
+        Value::String(s) => (
+            s.clone(),
+            None,
+            vec![ReplayEntry {
+                id: base_id.to_string(),
+                kind: "text".into(),
+                role: role.to_string(),
+                text: s.clone(),
+                timestamp,
+                tool_name: None,
+                tool_use_id: None,
+                tool_input_json: None,
+                tool_output_text: None,
+                is_error: false,
+                is_meta,
+            }],
+        ),
+        Value::Array(items) => {
+            let mut text = String::new();
+            let mut tool_name: Option<String> = None;
+            let mut entries = Vec::new();
+            let mut idx = 0usize;
+            for item in items {
+                let item_ty = item.get("type").and_then(|x| x.as_str()).unwrap_or("");
+                match item_ty {
+                    "text" => {
+                        if let Some(t) = item.get("text").and_then(|x| x.as_str()) {
+                            if !text.is_empty() {
+                                text.push('\n');
+                            }
+                            text.push_str(t);
+                            entries.push(ReplayEntry {
+                                id: format!("{base_id}-text-{idx}"),
+                                kind: "text".into(),
+                                role: role.to_string(),
+                                text: t.to_string(),
+                                timestamp: timestamp.clone(),
+                                tool_name: None,
+                                tool_use_id: None,
+                                tool_input_json: None,
+                                tool_output_text: None,
+                                is_error: false,
+                                is_meta,
+                            });
+                            idx += 1;
+                        }
+                    }
+                    "tool_use" => {
+                        tool_name = item.get("name").and_then(|x| x.as_str()).map(String::from);
+                        entries.push(ReplayEntry {
+                            id: format!("{base_id}-tool-call-{idx}"),
+                            kind: "tool_call".into(),
+                            role: "tool".into(),
+                            text: String::new(),
+                            timestamp: timestamp.clone(),
+                            tool_name: tool_name.clone(),
+                            tool_use_id: item.get("id").and_then(|x| x.as_str()).map(String::from),
+                            tool_input_json: item
+                                .get("input")
+                                .and_then(|x| serde_json::to_string(x).ok()),
+                            tool_output_text: None,
+                            is_error: false,
+                            is_meta,
+                        });
+                        idx += 1;
+                    }
+                    "tool_result" => {
+                        let output = tool_result_text(item.get("content")).unwrap_or_default();
+                        if !output.is_empty() {
+                            if !text.is_empty() {
+                                text.push('\n');
+                            }
+                            text.push_str(&output);
+                        }
+                        entries.push(ReplayEntry {
+                            id: format!("{base_id}-tool-result-{idx}"),
+                            kind: "tool_result".into(),
+                            role: "tool".into(),
+                            text: output.clone(),
+                            timestamp: timestamp.clone(),
+                            tool_name: None,
+                            tool_use_id: item
+                                .get("tool_use_id")
+                                .and_then(|x| x.as_str())
+                                .map(String::from),
+                            tool_input_json: None,
+                            tool_output_text: if output.is_empty() { None } else { Some(output) },
+                            is_error: item.get("is_error").and_then(|x| x.as_bool()).unwrap_or(false),
+                            is_meta,
+                        });
+                        idx += 1;
+                    }
+                    _ => {}
+                }
+            }
+            (text, tool_name, entries)
+        }
+        _ => (String::new(), None, vec![]),
+    }
+}
+
 #[tauri::command]
 pub fn replay_session(file_path: String) -> Result<ReplayResult, String> {
     let path = std::path::Path::new(&file_path);
@@ -579,6 +781,7 @@ pub fn replay_session(file_path: String) -> Result<ReplayResult, String> {
     let reader = BufReader::new(file);
 
     let mut messages: Vec<ReplayMessage> = Vec::new();
+    let mut entries: Vec<ReplayEntry> = Vec::new();
     let mut session_id: Option<String> = None;
     let mut cwd: Option<String> = None;
     let mut total_input: u64 = 0;
@@ -666,51 +869,17 @@ pub fn replay_session(file_path: String) -> Result<ReplayResult, String> {
         let uuid = v
             .get("uuid")
             .and_then(|x| x.as_str())
-            .map(String::from)
-            .unwrap_or_else(|| format!("msg-{}", messages.len()));
+                .map(String::from)
+                .unwrap_or_else(|| format!("msg-{}", messages.len()));
         let content = v.get("message").and_then(|m| m.get("content"));
-        let mut text = String::new();
-        let mut tool_name: Option<String> = None;
-        if let Some(content) = content {
-            match content {
-                Value::String(s) => text.push_str(s),
-                Value::Array(items) => {
-                    for item in items {
-                        let item_ty = item.get("type").and_then(|x| x.as_str()).unwrap_or("");
-                        match item_ty {
-                            "text" => {
-                                if let Some(t) = item.get("text").and_then(|x| x.as_str()) {
-                                    if !text.is_empty() {
-                                        text.push('\n');
-                                    }
-                                    text.push_str(t);
-                                }
-                            }
-                            "tool_use" => {
-                                tool_name =
-                                    item.get("name").and_then(|x| x.as_str()).map(String::from);
-                            }
-                            "tool_result" => {
-                                if let Some(t) = item.get("content") {
-                                    if let Some(s) = t.as_str() {
-                                        if !text.is_empty() {
-                                            text.push('\n');
-                                        }
-                                        text.push_str(s);
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
+        let (text, tool_name, mut line_entries) =
+            replay_entries_from_content(ty, &uuid, timestamp.clone(), content, is_meta);
 
         if text.is_empty() && tool_name.is_none() {
             continue;
         }
+
+        entries.append(&mut line_entries);
 
         messages.push(ReplayMessage {
             id: uuid,
@@ -725,6 +894,7 @@ pub fn replay_session(file_path: String) -> Result<ReplayResult, String> {
     Ok(ReplayResult {
         session_id,
         messages,
+        entries,
         cwd,
         total_input_tokens: total_input,
         total_output_tokens: total_output,
@@ -845,4 +1015,79 @@ pub fn delete_session(file_path: String) -> Result<(), String> {
         let _ = write_titles_map(&map);
     }
     fs::remove_file(&p).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    fn temp_dir(prefix: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("claude-deck-{}-{}", prefix, uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_file(path: &Path, content: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, content).unwrap();
+    }
+
+    #[test]
+    fn replay_session_preserves_tool_entries() {
+        let dir = temp_dir("replay");
+        let file_path = dir.join("session.jsonl");
+        write_file(
+            &file_path,
+            concat!(
+                "{\"type\":\"assistant\",\"uuid\":\"a1\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Read\",\"input\":{\"file_path\":\"src/App.tsx\"}}]}}\n",
+                "{\"type\":\"user\",\"uuid\":\"u2\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"toolu_1\",\"content\":\"file contents\",\"is_error\":false}]}}\n",
+            ),
+        );
+
+        let replay = replay_session(file_path.to_string_lossy().to_string()).unwrap();
+        let value = serde_json::to_value(&replay).unwrap();
+
+        assert!(
+            value.get("entries").is_some(),
+            "expected structured replay entries in replay result, got {:?}",
+            value
+                .as_object()
+                .map(|obj| obj.keys().cloned().collect::<Vec<_>>())
+                .unwrap_or_default()
+        );
+    }
+
+    #[test]
+    fn search_sessions_keeps_tool_context_fields() {
+        let home_dir = temp_dir("search-home");
+        let old_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", &home_dir);
+
+        let project_dir = home_dir.join(".claude").join("projects").join("-tmp-project");
+        let file_path = project_dir.join("session-1.jsonl");
+        write_file(
+            &file_path,
+            concat!(
+                "{\"type\":\"assistant\",\"uuid\":\"a1\",\"timestamp\":\"2026-05-20T12:00:00Z\",\"message\":{\"content\":[",
+                "{\"type\":\"text\",\"text\":\"Read src/App.tsx\"},",
+                "{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"Read\",\"input\":{\"file_path\":\"src/App.tsx\"}}",
+                "]}}\n",
+            ),
+        );
+
+        let hits = search_sessions("read".into(), Some(10));
+        let value = serde_json::to_value(hits.first().expect("expected at least one hit")).unwrap();
+
+        if let Some(old_home) = old_home {
+            std::env::set_var("HOME", old_home);
+        } else {
+            std::env::remove_var("HOME");
+        }
+
+        assert!(value.get("entry_kind").is_some(), "expected entry_kind in serialized search hit: {value:?}");
+        assert!(value.get("tool_name").is_some(), "expected tool_name in serialized search hit: {value:?}");
+    }
 }
