@@ -6,6 +6,7 @@ import {
   onClaudeEvent,
   onClaudeStderr,
   parseStreamLine,
+  type Effort,
   type PermissionMode,
   type ReplayMessage,
 } from "../lib/claude";
@@ -530,6 +531,9 @@ export function useChats(notify: Notify = tryNotify) {
       opts?: {
         permissionMode?: PermissionMode;
         model?: string | null;
+        systemPrompt?: string | null;
+        appendSystemPrompt?: string | null;
+        effort?: Effort | null;
       }
     ) => {
       const tab = tabsRef.current[convId];
@@ -562,6 +566,9 @@ export function useChats(notify: Notify = tryNotify) {
           skip_permissions: mode === "bypassPermissions",
           permission_mode: mode,
           model: opts?.model ?? null,
+          system_prompt: opts?.systemPrompt ?? null,
+          append_system_prompt: opts?.appendSystemPrompt ?? null,
+          effort: opts?.effort ?? null,
         });
       } catch (e) {
         patch(convId, (t) => ({

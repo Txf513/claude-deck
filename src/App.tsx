@@ -46,7 +46,8 @@ const COMPOSER_KEY = "cd:composer";
 const DEFAULT_COMPOSER: ComposerSettings = {
   permissionMode: "default",
   model: "opus",
-  thinking: true,
+  effort: "off",
+  appendSystemPrompt: "",
 };
 
 function readTheme(): Theme {
@@ -61,16 +62,23 @@ function readComposerSettings(): ComposerSettings {
   try {
     const v = localStorage.getItem(COMPOSER_KEY);
     if (v) {
-      const parsed = JSON.parse(v) as Partial<ComposerSettings>;
-      return { ...DEFAULT_COMPOSER, ...parsed };
+      const parsed = JSON.parse(v) as Partial<ComposerSettings> & {
+        thinking?: boolean;
+      };
+      // Migrate legacy `thinking: true/false` to the new effort field.
+      const migrated: Partial<ComposerSettings> = { ...parsed };
+      if (parsed.effort === undefined && parsed.thinking !== undefined) {
+        migrated.effort = parsed.thinking ? "high" : "off";
+      }
+      delete (migrated as { thinking?: boolean }).thinking;
+      return { ...DEFAULT_COMPOSER, ...migrated };
     }
   } catch {}
   return DEFAULT_COMPOSER;
 }
 
 function modelArg(s: ComposerSettings): string {
-  // Family alias is enough; thinking is configured via env in user settings.
-  // We leave the family alias as-is and let claude pick the configured variant.
+  // Family alias is enough; reasoning effort is now passed separately as --effort.
   return s.model;
 }
 
@@ -331,9 +339,15 @@ export default function App() {
             onSend={(text, attachments: Attachment[]) => {
               if (!claudeBin) return;
               const fullPrompt = buildPromptWithAttachments(text, attachments);
+              const trimmedAppend = composerSettings.appendSystemPrompt.trim();
               chats.send(tab.convId, fullPrompt, claudeBin, {
                 permissionMode: composerSettings.permissionMode,
                 model: modelArg(composerSettings),
+                effort:
+                  composerSettings.effort === "off"
+                    ? null
+                    : composerSettings.effort,
+                appendSystemPrompt: trimmedAppend || null,
               });
             }}
             onCancel={() => chats.cancel(tab.convId)}

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::process::Stdio;
+use std::sync::Arc;
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -9,9 +9,17 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::oneshot;
 
-#[derive(Default)]
+use crate::path_util::{augmented_path, resolve_claude_bin};
+
+/// Event channel names emitted from the claude module. Frontend listeners must
+/// subscribe to these exact strings — keep `src/lib/claude.ts` in sync.
+pub const EVENT_STREAM: &str = "claude:event";
+pub const EVENT_STDERR: &str = "claude:stderr";
+pub const EVENT_DONE: &str = "claude:done";
+
+#[derive(Default, Clone)]
 pub struct ClaudeState {
-    inflight: Mutex<HashMap<String, oneshot::Sender<()>>>,
+    inflight: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
 }
 
 #[derive(Clone, Serialize)]
@@ -44,53 +52,12 @@ pub struct ClaudeSendArgs {
     pub skip_permissions: bool,
     pub permission_mode: Option<String>,
     pub model: Option<String>,
-}
-
-fn augmented_path() -> String {
-    let existing = std::env::var("PATH").unwrap_or_default();
-    let home = std::env::var("HOME").unwrap_or_default();
-    let mut extras = vec![
-        "/opt/homebrew/bin".to_string(),
-        "/usr/local/bin".to_string(),
-        "/usr/bin".to_string(),
-        "/bin".to_string(),
-    ];
-    if !home.is_empty() {
-        extras.push(format!("{}/.cargo/bin", home));
-        if let Ok(entries) = std::fs::read_dir(format!("{}/.nvm/versions/node", home)) {
-            let mut versions: Vec<_> = entries
-                .filter_map(|e| e.ok())
-                .map(|e| e.path())
-                .collect();
-            versions.sort();
-            if let Some(latest) = versions.last() {
-                extras.push(format!("{}/bin", latest.display()));
-            }
-        }
-    }
-    let mut parts: Vec<&str> = existing.split(':').filter(|s| !s.is_empty()).collect();
-    for extra in &extras {
-        if !parts.iter().any(|p| *p == extra.as_str()) {
-            parts.push(extra.as_str());
-        }
-    }
-    parts.join(":")
-}
-
-fn resolve_bin(explicit: Option<String>) -> Option<PathBuf> {
-    if let Some(p) = explicit {
-        let pb = PathBuf::from(p);
-        if pb.is_file() {
-            return Some(pb);
-        }
-    }
-    for dir in augmented_path().split(':') {
-        let candidate = PathBuf::from(dir).join("claude");
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-    }
-    None
+    /// Replaces the default system prompt for this session.
+    pub system_prompt: Option<String>,
+    /// Appended after the default system prompt for this session.
+    pub append_system_prompt: Option<String>,
+    /// Reasoning effort level: "low" | "medium" | "high" | "xhigh" | "max".
+    pub effort: Option<String>,
 }
 
 #[tauri::command]
@@ -99,7 +66,7 @@ pub async fn claude_send(
     state: State<'_, ClaudeState>,
     args: ClaudeSendArgs,
 ) -> Result<(), String> {
-    let bin = resolve_bin(args.claude_bin).ok_or("claude binary not found")?;
+    let bin = resolve_claude_bin(args.claude_bin).ok_or("claude binary not found")?;
 
     if !std::path::Path::new(&args.cwd).is_dir() {
         return Err(format!(
@@ -125,6 +92,21 @@ pub async fn claude_send(
     if let Some(model) = args.model.as_deref() {
         if !model.is_empty() {
             cmd.arg("--model").arg(model);
+        }
+    }
+    if let Some(sp) = args.system_prompt.as_deref() {
+        if !sp.is_empty() {
+            cmd.arg("--system-prompt").arg(sp);
+        }
+    }
+    if let Some(asp) = args.append_system_prompt.as_deref() {
+        if !asp.is_empty() {
+            cmd.arg("--append-system-prompt").arg(asp);
+        }
+    }
+    if let Some(effort) = args.effort.as_deref() {
+        if !effort.is_empty() {
+            cmd.arg("--effort").arg(effort);
         }
     }
     if let Some(sid) = args.resume_session_id.as_ref() {
@@ -154,7 +136,7 @@ pub async fn claude_send(
         let mut reader = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = reader.next_line().await {
             let _ = app_for_stdout.emit(
-                "claude:event",
+                EVENT_STREAM,
                 ClaudeEventPayload {
                     request_id: req_id_stdout.clone(),
                     line,
@@ -169,7 +151,7 @@ pub async fn claude_send(
         let mut reader = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = reader.next_line().await {
             let _ = app_for_stderr.emit(
-                "claude:stderr",
+                EVENT_STDERR,
                 ClaudeStderrPayload {
                     request_id: req_id_stderr.clone(),
                     line,
@@ -180,10 +162,7 @@ pub async fn claude_send(
 
     let req_id_for_done = args.request_id.clone();
     let app_for_done = app.clone();
-    let state_inflight = state.inflight.lock().keys().cloned().collect::<Vec<_>>();
-    drop(state_inflight);
-    let cleanup_handle = state.inner() as *const ClaudeState;
-    let cleanup_handle = unsafe { &*cleanup_handle };
+    let inflight_for_cleanup = state.inflight.clone();
 
     tokio::spawn(async move {
         let outcome = tokio::select! {
@@ -207,9 +186,9 @@ pub async fn claude_send(
             Ok(c) => (c, None),
             Err(e) => (None, Some(e)),
         };
-        cleanup_handle.inflight.lock().remove(&req_id_for_done);
+        inflight_for_cleanup.lock().remove(&req_id_for_done);
         let _ = app_for_done.emit(
-            "claude:done",
+            EVENT_DONE,
             ClaudeDonePayload {
                 request_id: req_id_for_done,
                 code,

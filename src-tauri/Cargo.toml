@@ -28,4 +28,5 @@ parking_lot = "0.12"
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 tokio = { version = "1", features = ["process", "io-util", "macros", "rt-multi-thread", "sync"] }
+tauri-plugin-window-state = "2.4.1"
 

@@ -9,6 +9,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
+use crate::path_util::augmented_path;
+
 pub struct Session {
     master: Box<dyn MasterPty + Send>,
     writer: Box<dyn Write + Send>,
@@ -30,37 +32,6 @@ struct PtyDataPayload {
 struct PtyExitPayload {
     id: String,
     code: Option<i32>,
-}
-
-fn augmented_path() -> String {
-    let existing = std::env::var("PATH").unwrap_or_default();
-    let home = std::env::var("HOME").unwrap_or_default();
-    let mut extras = vec![
-        "/opt/homebrew/bin".to_string(),
-        "/usr/local/bin".to_string(),
-        "/usr/bin".to_string(),
-        "/bin".to_string(),
-    ];
-    if !home.is_empty() {
-        extras.push(format!("{}/.cargo/bin", home));
-        if let Ok(entries) = std::fs::read_dir(format!("{}/.nvm/versions/node", home)) {
-            let mut versions: Vec<_> = entries
-                .filter_map(|e| e.ok())
-                .map(|e| e.path())
-                .collect();
-            versions.sort();
-            if let Some(latest) = versions.last() {
-                extras.push(format!("{}/bin", latest.display()));
-            }
-        }
-    }
-    let mut parts: Vec<&str> = existing.split(':').filter(|s| !s.is_empty()).collect();
-    for extra in &extras {
-        if !parts.iter().any(|p| *p == extra.as_str()) {
-            parts.push(extra.as_str());
-        }
-    }
-    parts.join(":")
 }
 
 #[tauri::command]
@@ -205,12 +176,5 @@ pub fn pty_list(state: State<'_, PtyState>) -> Vec<String> {
 
 #[tauri::command]
 pub fn resolve_claude_bin() -> Option<String> {
-    let path = augmented_path();
-    for dir in path.split(':') {
-        let candidate = std::path::Path::new(dir).join("claude");
-        if candidate.is_file() {
-            return Some(candidate.to_string_lossy().to_string());
-        }
-    }
-    None
+    crate::path_util::resolve_claude_bin(None).map(|p| p.to_string_lossy().to_string())
 }

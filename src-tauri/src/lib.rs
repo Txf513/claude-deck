@@ -1,5 +1,6 @@
 mod claude;
 mod config;
+mod path_util;
 mod pty;
 mod sessions;
 
@@ -8,6 +9,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_window_state::Builder::new().build())
         .manage(pty::PtyState::default())
         .manage(claude::ClaudeState::default())
         .invoke_handler(tauri::generate_handler![

@@ -3,15 +3,18 @@ import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import { savePasteImage } from "../lib/pty";
 import { listModels, type ModelOption } from "../lib/config";
 import { searchFiles, type FileHit } from "../lib/sessions";
-import type { PermissionMode } from "../lib/claude";
+import type { Effort, PermissionMode } from "../lib/claude";
 import { LocalImage } from "./LocalImage";
 import { Lightbox } from "./Lightbox";
 import { ChevronDown, MicIcon, PlusIcon, SendIcon, WarningDot } from "./Icons";
 
+export type EffortChoice = Effort | "off";
+
 export type ComposerSettings = {
   permissionMode: PermissionMode;
   model: string;
-  thinking: boolean;
+  effort: EffortChoice;
+  appendSystemPrompt: string;
 };
 
 export type Attachment = {
@@ -57,6 +60,19 @@ const PERMISSION_OPTIONS: {
   { value: "bypassPermissions", label: "bypassPermissions", hint: "跳过所有权限检查" },
 ];
 
+const EFFORT_OPTIONS: {
+  value: EffortChoice;
+  label: string;
+  hint: string;
+}[] = [
+  { value: "off", label: "effort: off", hint: "不传 --effort，使用模型默认" },
+  { value: "low", label: "effort: low", hint: "极少思考，最省 token" },
+  { value: "medium", label: "effort: medium", hint: "中等思考量" },
+  { value: "high", label: "effort: high", hint: "充分思考（推荐）" },
+  { value: "xhigh", label: "effort: xhigh", hint: "更深入推理" },
+  { value: "max", label: "effort: max", hint: "最大思考预算" },
+];
+
 const MODEL_FALLBACK: ModelOption[] = [
   {
     id: "opus",
@@ -84,7 +100,7 @@ const MODEL_FALLBACK: ModelOption[] = [
   },
 ];
 
-function buildModelArg(family: string, _thinking: boolean): string {
+function buildModelArg(family: string): string {
   return family;
 }
 
@@ -98,6 +114,10 @@ function modelLabel(s: ComposerSettings, options: ModelOption[]): string {
 
 function permissionLabel(mode: PermissionMode): string {
   return PERMISSION_OPTIONS.find((o) => o.value === mode)?.label ?? mode;
+}
+
+function effortLabel(value: EffortChoice): string {
+  return EFFORT_OPTIONS.find((o) => o.value === value)?.label ?? `effort: ${value}`;
 }
 
 function permissionAccent(mode: PermissionMode): string {
@@ -124,6 +144,8 @@ export function Composer({
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [permOpen, setPermOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
+  const [effortOpen, setEffortOpen] = useState(false);
+  const [systemOpen, setSystemOpen] = useState(false);
   const [models, setModels] = useState<ModelOption[]>(MODEL_FALLBACK);
   const [slashOpen, setSlashOpen] = useState(false);
   const [slashIdx, setSlashIdx] = useState(0);
@@ -199,6 +221,7 @@ export function Composer({
       if (!wrapRef.current?.contains(e.target as Node)) {
         setPermOpen(false);
         setModelOpen(false);
+        setEffortOpen(false);
       }
     }
     window.addEventListener("mousedown", onClick);
@@ -398,6 +421,33 @@ export function Composer({
     <div className="cd-composer-wrap" ref={wrapRef}>
       {lightbox && <Lightbox path={lightbox} onClose={() => setLightbox(null)} />}
       <div className="cd-composer" onDrop={onDrop} onDragOver={onDragOver}>
+        <div className="cd-composer-syshead">
+          <button
+            className="cd-composer-sys-toggle"
+            onClick={() => setSystemOpen((v) => !v)}
+            title="附加给 Claude 的系统提示，会通过 --append-system-prompt 传入"
+          >
+            {systemOpen ? "▾" : "▸"} 系统提示
+            {settings.appendSystemPrompt.trim() && (
+              <span className="cd-composer-sys-dot" title="已设置" />
+            )}
+          </button>
+        </div>
+        {systemOpen && (
+          <textarea
+            className="cd-composer-sys-input"
+            placeholder="可选。这里写的内容会作为 --append-system-prompt 加在默认系统提示之后。"
+            value={settings.appendSystemPrompt}
+            onChange={(e) =>
+              onSettingsChange({
+                ...settings,
+                appendSystemPrompt: e.target.value,
+              })
+            }
+            rows={3}
+          />
+        )}
+
         {attachments.length > 0 && (
           <div className="cd-composer-attachments">
             {attachments.map((a) =>
@@ -511,6 +561,39 @@ export function Composer({
                     onClick={() => {
                       onSettingsChange({ ...settings, permissionMode: o.value });
                       setPermOpen(false);
+                    }}
+                  >
+                    <div className="cd-pop-item-label">{o.label}</div>
+                    <div className="cd-pop-item-hint">{o.hint}</div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="cd-pop-wrap">
+            <button
+              className="cd-pill"
+              onClick={() => {
+                setEffortOpen((v) => !v);
+                setPermOpen(false);
+                setModelOpen(false);
+              }}
+              title="思考强度（--effort）。off 表示不传该参数。"
+            >
+              {effortLabel(settings.effort)} <ChevronDown size={12} />
+            </button>
+            {effortOpen && (
+              <div className="cd-pop">
+                {EFFORT_OPTIONS.map((o) => (
+                  <button
+                    key={o.value}
+                    className={`cd-pop-item ${
+                      settings.effort === o.value ? "active" : ""
+                    }`}
+                    onClick={() => {
+                      onSettingsChange({ ...settings, effort: o.value });
+                      setEffortOpen(false);
                     }}
                   >
                     <div className="cd-pop-item-label">{o.label}</div>

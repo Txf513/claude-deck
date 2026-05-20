@@ -1556,6 +1556,50 @@ body,
   max-height: 240px;
 }
 
+.cd-composer-syshead {
+  display: flex;
+  align-items: center;
+  margin-bottom: 4px;
+}
+.cd-composer-sys-toggle {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-size: 12px;
+  color: var(--text-secondary, #888);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.cd-composer-sys-toggle:hover { color: var(--text-primary); }
+.cd-composer-sys-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  margin-left: 4px;
+}
+.cd-composer-sys-input {
+  width: 100%;
+  border: 1px solid var(--border-light, rgba(0, 0, 0, 0.08));
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 8px;
+  font-family: var(--font-mono, monospace);
+  font-size: 12.5px;
+  background: var(--bg-button-pill, rgba(0, 0, 0, 0.02));
+  color: var(--text-primary);
+  resize: vertical;
+  min-height: 60px;
+  max-height: 180px;
+  outline: none;
+}
+.cd-composer-sys-input:focus {
+  border-color: var(--accent);
+}
+
 .cd-composer-input::placeholder {
   color: var(--text-faint);
 }

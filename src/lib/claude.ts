@@ -1,6 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
+/**
+ * Event channel names emitted by the Rust `claude` module. Mirrors
+ * `src-tauri/src/claude.rs` constants — keep both sides in sync.
+ */
+export const EVENT_STREAM = "claude:event";
+export const EVENT_STDERR = "claude:stderr";
+export const EVENT_DONE = "claude:done";
+
 export type ClaudeEventPayload = { request_id: string; line: string };
 export type ClaudeStderrPayload = { request_id: string; line: string };
 export type ClaudeDonePayload = {
@@ -18,6 +26,9 @@ export type SendArgs = {
   skip_permissions?: boolean;
   permission_mode?: PermissionMode | null;
   model?: string | null;
+  system_prompt?: string | null;
+  append_system_prompt?: string | null;
+  effort?: Effort | null;
 };
 
 export type PermissionMode =
@@ -27,6 +38,8 @@ export type PermissionMode =
   | "plan"
   | "dontAsk"
   | "bypassPermissions";
+
+export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
 export async function claudeSend(args: SendArgs): Promise<void> {
   await invoke("claude_send", { args });
@@ -39,19 +52,19 @@ export async function claudeCancel(requestId: string): Promise<void> {
 export async function onClaudeEvent(
   cb: (payload: ClaudeEventPayload) => void
 ): Promise<UnlistenFn> {
-  return await listen<ClaudeEventPayload>("claude:event", (e) => cb(e.payload));
+  return await listen<ClaudeEventPayload>(EVENT_STREAM, (e) => cb(e.payload));
 }
 
 export async function onClaudeStderr(
   cb: (payload: ClaudeStderrPayload) => void
 ): Promise<UnlistenFn> {
-  return await listen<ClaudeStderrPayload>("claude:stderr", (e) => cb(e.payload));
+  return await listen<ClaudeStderrPayload>(EVENT_STDERR, (e) => cb(e.payload));
 }
 
 export async function onClaudeDone(
   cb: (payload: ClaudeDonePayload) => void
 ): Promise<UnlistenFn> {
-  return await listen<ClaudeDonePayload>("claude:done", (e) => cb(e.payload));
+  return await listen<ClaudeDonePayload>(EVENT_DONE, (e) => cb(e.payload));
 }
 
 export type ReplayMessage = {

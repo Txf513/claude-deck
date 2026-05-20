@@ -42,6 +42,8 @@ This is the system's main feature; understand it before changing chat behavior.
 
 If you change the CLI argv, **also** update the parser — they are coupled.
 
+Event channel names emitted from Rust live as `pub const EVENT_*` in `src-tauri/src/claude.rs` and are mirrored by `EVENT_*` exports in `src/lib/claude.ts`. Always use the constants on both sides — never inline the string literals.
+
 ### Sessions on disk
 
 `sessions::*` treats `~/.claude/projects/<folder>/*.jsonl` as the source of truth for history. The folder name encodes the cwd (leading `-` becomes `/`, other `-` become `/`; see `folder_to_path` in `sessions.rs`). The frontend opens a session by reading its file path; resuming sends the session id to the CLI as `--resume` and lets the CLI itself append to the same `.jsonl`.
@@ -50,7 +52,7 @@ If you change the CLI argv, **also** update the parser — they are coupled.
 
 ### PATH discovery
 
-Both `pty.rs` and `claude.rs` define `augmented_path()` to find `claude` even when the GUI launches without the user's shell rc. They prepend `/opt/homebrew/bin`, `/usr/local/bin`, `~/.cargo/bin`, and the latest `~/.nvm/versions/node/*/bin`. `resolve_bin()` walks that PATH and returns the first `claude` it finds. If you change one, change the other.
+`augmented_path()` and `resolve_claude_bin()` live in `src-tauri/src/path_util.rs` and are shared by `pty.rs` and `claude.rs`. They prepend `/opt/homebrew/bin`, `/usr/local/bin`, `~/.cargo/bin`, and the latest `~/.nvm/versions/node/*/bin` so the GUI can find `claude` even when it launches without the user's shell rc loaded.
 
 ### Frontend shell
 
