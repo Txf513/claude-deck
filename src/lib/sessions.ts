@@ -37,6 +37,8 @@ export type SearchHit = {
   timestamp: string | null;
   mtime_ms: number;
   uuid: string | null;
+  entry_kind: string | null;
+  tool_name: string | null;
 };
 
 export async function searchSessions(query: string, limit = 50): Promise<SearchHit[]> {
