@@ -16,10 +16,7 @@ pub fn augmented_path() -> String {
     if !home.is_empty() {
         extras.push(format!("{}/.cargo/bin", home));
         if let Ok(entries) = std::fs::read_dir(format!("{}/.nvm/versions/node", home)) {
-            let mut versions: Vec<_> = entries
-                .filter_map(|e| e.ok())
-                .map(|e| e.path())
-                .collect();
+            let mut versions: Vec<_> = entries.filter_map(|e| e.ok()).map(|e| e.path()).collect();
             versions.sort();
             if let Some(latest) = versions.last() {
                 extras.push(format!("{}/bin", latest.display()));

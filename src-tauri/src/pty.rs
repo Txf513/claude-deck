@@ -134,7 +134,10 @@ pub fn pty_write(state: State<'_, PtyState>, id: String, data: String) -> Result
         .map_err(|e| e.to_string())?;
     let mut sessions = state.sessions.lock();
     let session = sessions.get_mut(&id).ok_or("session not found")?;
-    session.writer.write_all(&bytes).map_err(|e| e.to_string())?;
+    session
+        .writer
+        .write_all(&bytes)
+        .map_err(|e| e.to_string())?;
     session.writer.flush().map_err(|e| e.to_string())?;
     Ok(())
 }

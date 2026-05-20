@@ -115,8 +115,8 @@ pub struct WriteResult {
 
 #[tauri::command]
 pub fn write_config(kind: String, content: String) -> Result<WriteResult, String> {
-    let parsed: Value = serde_json::from_str(&content)
-        .map_err(|e| format!("invalid JSON: {}", e))?;
+    let parsed: Value =
+        serde_json::from_str(&content).map_err(|e| format!("invalid JSON: {}", e))?;
     let path = config_path(&kind)?;
     let backup = ensure_backup(&path)?;
     let pretty = serde_json::to_string_pretty(&parsed).map_err(|e| e.to_string())?;
@@ -409,7 +409,12 @@ pub fn read_image_data_url(path: String) -> Result<String, String> {
     if bytes.len() > 8 * 1024 * 1024 {
         return Err("image too large (>8MB)".into());
     }
-    let mime = match p.extension().and_then(|e| e.to_str()).map(|s| s.to_lowercase()).as_deref() {
+    let mime = match p
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|s| s.to_lowercase())
+        .as_deref()
+    {
         Some("png") => "image/png",
         Some("jpg") | Some("jpeg") => "image/jpeg",
         Some("gif") => "image/gif",
@@ -493,7 +498,10 @@ pub fn list_models() -> Result<Vec<ModelOption>, String> {
     let mut out: Vec<ModelOption> = Vec::new();
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
 
-    let push = |id: &str, source: &str, list: &mut Vec<ModelOption>, seen: &mut std::collections::BTreeSet<String>| {
+    let push = |id: &str,
+                source: &str,
+                list: &mut Vec<ModelOption>,
+                seen: &mut std::collections::BTreeSet<String>| {
         if id.is_empty() || seen.contains(id) {
             return;
         }

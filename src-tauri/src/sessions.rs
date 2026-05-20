@@ -263,9 +263,7 @@ pub fn list_sessions(folder: String, limit: Option<usize>) -> Vec<SessionInfo> {
 
     let mut sessions: Vec<SessionInfo> = entries
         .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path().extension().and_then(|s| s.to_str()) == Some("jsonl")
-        })
+        .filter(|e| e.path().extension().and_then(|s| s.to_str()) == Some("jsonl"))
         .filter_map(|e| scan_session_file(&e.path()))
         .filter(|s| s.message_count > 0)
         .collect();
@@ -408,10 +406,7 @@ pub fn search_sessions(query: String, limit: Option<usize>) -> Vec<SearchHit> {
                     .get("timestamp")
                     .and_then(|x| x.as_str())
                     .map(String::from);
-                let uuid = v
-                    .get("uuid")
-                    .and_then(|x| x.as_str())
-                    .map(String::from);
+                let uuid = v.get("uuid").and_then(|x| x.as_str()).map(String::from);
                 hits.push(SearchHit {
                     session_id: session_id.clone(),
                     file_path: path.to_string_lossy().to_string(),
@@ -490,10 +485,7 @@ pub fn search_files(
                 continue;
             }
             let path = entry.path();
-            let is_dir = entry
-                .file_type()
-                .map(|t| t.is_dir())
-                .unwrap_or(false);
+            let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
             if is_dir {
                 queue.push_back(path);
                 continue;
@@ -577,11 +569,7 @@ fn build_snippet(text: &str, q: &str) -> String {
     if end < chars.len() {
         out.push('…');
     }
-    out
-        .replace('\n', " ")
-        .replace('\r', " ")
-        .trim()
-        .to_string()
+    out.replace('\n', " ").replace('\r', " ").trim().to_string()
 }
 
 #[tauri::command]
@@ -628,8 +616,14 @@ pub fn replay_session(file_path: String) -> Result<ReplayResult, String> {
         // Capture usage on assistant lines for cumulative stats
         if ty == "assistant" {
             if let Some(usage) = v.get("message").and_then(|m| m.get("usage")) {
-                let inp = usage.get("input_tokens").and_then(|x| x.as_u64()).unwrap_or(0);
-                let out = usage.get("output_tokens").and_then(|x| x.as_u64()).unwrap_or(0);
+                let inp = usage
+                    .get("input_tokens")
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(0);
+                let out = usage
+                    .get("output_tokens")
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(0);
                 let cr = usage
                     .get("cache_read_input_tokens")
                     .and_then(|x| x.as_u64())
@@ -682,10 +676,7 @@ pub fn replay_session(file_path: String) -> Result<ReplayResult, String> {
                 Value::String(s) => text.push_str(s),
                 Value::Array(items) => {
                     for item in items {
-                        let item_ty = item
-                            .get("type")
-                            .and_then(|x| x.as_str())
-                            .unwrap_or("");
+                        let item_ty = item.get("type").and_then(|x| x.as_str()).unwrap_or("");
                         match item_ty {
                             "text" => {
                                 if let Some(t) = item.get("text").and_then(|x| x.as_str()) {
@@ -696,10 +687,8 @@ pub fn replay_session(file_path: String) -> Result<ReplayResult, String> {
                                 }
                             }
                             "tool_use" => {
-                                tool_name = item
-                                    .get("name")
-                                    .and_then(|x| x.as_str())
-                                    .map(String::from);
+                                tool_name =
+                                    item.get("name").and_then(|x| x.as_str()).map(String::from);
                             }
                             "tool_result" => {
                                 if let Some(t) = item.get("content") {
@@ -768,7 +757,11 @@ fn guess_context_window(model: &str) -> u64 {
 
 fn titles_path() -> Option<std::path::PathBuf> {
     let home = std::env::var("HOME").ok()?;
-    Some(std::path::PathBuf::from(home).join(".claude").join("claude-deck-titles.json"))
+    Some(
+        std::path::PathBuf::from(home)
+            .join(".claude")
+            .join("claude-deck-titles.json"),
+    )
 }
 
 fn read_titles_map() -> std::collections::BTreeMap<String, String> {
