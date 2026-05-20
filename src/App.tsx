@@ -442,6 +442,24 @@ export default function App() {
       <OutputPanel
         visible={outputVisible && view.kind === "chat" && !!tab}
         messages={tab ? tab.messages : []}
+        status={tab?.status ?? "idle"}
+        error={tab?.error ?? null}
+        stderr={tab?.stderr ?? []}
+        usage={
+          tab?.usage ?? {
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            contextWindow: 0,
+            costUsd: 0,
+            totalInputTokens: 0,
+            totalOutputTokens: 0,
+            totalCacheReadTokens: 0,
+            totalCacheCreationTokens: 0,
+            turnCount: 0,
+          }
+        }
         onToggleTerminal={() => setOutputVisible((v) => !v)}
       />
 

@@ -10,27 +10,8 @@ import {
   type Effort,
   type PermissionMode,
 } from "../lib/claude";
-import type { ChatMessage } from "../lib/chatTypes";
+import type { ChatMessage, ConvStatus, UsageStats } from "../lib/chatTypes";
 import { normalizeReplay } from "../lib/replay";
-
-export type ConvStatus = "idle" | "thinking" | "streaming" | "error";
-
-export type UsageStats = {
-  // Last turn (used for context-window gauge)
-  inputTokens: number;
-  outputTokens: number;
-  cacheReadTokens: number;
-  cacheCreationTokens: number;
-  contextWindow: number;
-  // CLI-reported cumulative cost for this session
-  costUsd: number;
-  // Cumulative across all turns in this conversation
-  totalInputTokens: number;
-  totalOutputTokens: number;
-  totalCacheReadTokens: number;
-  totalCacheCreationTokens: number;
-  turnCount: number;
-};
 
 export type ChatTab = {
   convId: string;
