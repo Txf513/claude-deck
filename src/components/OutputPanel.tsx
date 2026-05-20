@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { TerminalIcon, InfoIcon } from "./Icons";
-import type { ChatMessage } from "../hooks/useChats";
+import type { ChatMessage } from "../lib/chatTypes";
 
 type Props = {
   visible: boolean;
