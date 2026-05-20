@@ -19,6 +19,7 @@ pub fn run() {
             pty::pty_kill,
             pty::pty_list,
             pty::resolve_claude_bin,
+            path_util::get_home_dir,
             sessions::list_projects,
             sessions::list_sessions,
             sessions::replay_session,

@@ -13,7 +13,7 @@ import { Sidebar, type ConvSelection } from "./components/Sidebar";
 import { TerminalView, endSession } from "./components/TerminalView";
 import { useChats } from "./hooks/useChats";
 import { replaySession } from "./lib/claude";
-import { resolveClaudeBin, spawnPty } from "./lib/pty";
+import { getHomeDir, resolveClaudeBin, spawnPty } from "./lib/pty";
 import {
   listSessions,
   type ProjectInfo,
@@ -39,7 +39,6 @@ type LegacyTab = {
 
 type Theme = "light" | "dark";
 
-const HOME = "/Users/txf";
 const THEME_KEY = "cd:theme";
 const COMPOSER_KEY = "cd:composer";
 
@@ -95,9 +94,11 @@ export default function App() {
     readComposerSettings
   );
   const chats = useChats();
+  const [homeDir, setHomeDir] = useState<string>("");
 
   useEffect(() => {
     resolveClaudeBin().then(setClaudeBin);
+    getHomeDir().then(setHomeDir);
   }, []);
 
   useEffect(() => {
@@ -263,7 +264,7 @@ export default function App() {
       const ptyId = await spawnPty({
         command: claudeBin,
         args: [],
-        cwd: HOME,
+        cwd: homeDir || undefined,
         cols: 100,
         rows: 30,
       });

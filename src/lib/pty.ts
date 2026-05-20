@@ -51,6 +51,15 @@ export async function resolveClaudeBin(): Promise<string | null> {
   return (await invoke<string | null>("resolve_claude_bin")) ?? null;
 }
 
+/** Returns the user's HOME directory, or empty string if unavailable. */
+export async function getHomeDir(): Promise<string> {
+  try {
+    return await invoke<string>("get_home_dir");
+  } catch {
+    return "";
+  }
+}
+
 export async function savePasteImage(
   bytes: Uint8Array,
   ext: string
