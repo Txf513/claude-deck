@@ -316,6 +316,7 @@ export default function App() {
             messages={tab.messages}
             status={tab.status}
             error={tab.error}
+            stderr={tab.stderr}
             highlightId={highlightId}
             onHighlightConsumed={() => setHighlightId(null)}
           />

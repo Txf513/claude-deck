@@ -25,7 +25,11 @@ export function OutputPanel({ visible, messages, onToggleTerminal }: Props) {
         >
           <TerminalIcon size={16} />
         </button>
-        <button className="cd-icon-btn cd-icon-btn-active" title="详情">
+        <button
+          className="cd-icon-btn cd-icon-btn-active"
+          title="详情（即将推出）"
+          disabled
+        >
           <InfoIcon size={16} />
         </button>
       </div>

@@ -16,6 +16,7 @@ type Props = {
   messages: ChatMessage[];
   status: "idle" | "thinking" | "streaming" | "error";
   error?: string | null;
+  stderr?: string[];
   highlightId?: string | null;
   onHighlightConsumed?: () => void;
 };
@@ -26,6 +27,7 @@ export function ChatView({
   messages,
   status,
   error,
+  stderr,
   highlightId,
   onHighlightConsumed,
 }: Props) {
@@ -143,10 +145,42 @@ export function ChatView({
             ))
           )}
           {status === "thinking" && <ThinkingDots />}
-          {error && <div className="cd-chat-error">{error}</div>}
+          {(error || (stderr && stderr.length > 0)) && (
+            <ChatErrorBlock error={error ?? null} stderr={stderr ?? []} />
+          )}
         </div>
       </div>
     </section>
+  );
+}
+
+function ChatErrorBlock({
+  error,
+  stderr,
+}: {
+  error: string | null;
+  stderr: string[];
+}) {
+  const [open, setOpen] = useState(false);
+  const hasStderr = stderr.length > 0;
+  return (
+    <div className="cd-chat-error">
+      {error && <div>{error}</div>}
+      {!error && hasStderr && <div>Claude CLI 输出了诊断信息</div>}
+      {hasStderr && (
+        <>
+          <button
+            className="cd-chat-error-toggle"
+            onClick={() => setOpen((v) => !v)}
+          >
+            {open ? "▾" : "▸"} CLI stderr ({stderr.length} 行)
+          </button>
+          {open && (
+            <pre className="cd-chat-error-pre">{stderr.join("\n")}</pre>
+          )}
+        </>
+      )}
+    </div>
   );
 }
 

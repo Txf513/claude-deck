@@ -4,6 +4,7 @@ import {
   claudeSend,
   onClaudeDone,
   onClaudeEvent,
+  onClaudeStderr,
   parseStreamLine,
   type PermissionMode,
   type ReplayMessage,
@@ -65,6 +66,7 @@ export type ChatTab = {
   messages: ChatMessage[];
   status: ConvStatus;
   error: string | null;
+  stderr: string[];
   unread: boolean;
   usage: UsageStats;
   slashCommands: string[];
@@ -128,6 +130,7 @@ export function useChats(notify: Notify = tryNotify) {
 
   useEffect(() => {
     let unlistenEvent: (() => void) | null = null;
+    let unlistenStderr: (() => void) | null = null;
     let unlistenDone: (() => void) | null = null;
 
     onClaudeEvent((p) => {
@@ -136,14 +139,25 @@ export function useChats(notify: Notify = tryNotify) {
       handleLine(convId, p.line);
     }).then((u) => (unlistenEvent = u));
 
+    onClaudeStderr((p) => {
+      const convId = findConvByRequestId(p.request_id);
+      if (!convId) return;
+      // Cap to last 200 lines per conversation to avoid unbounded growth.
+      patch(convId, (t) => ({
+        ...t,
+        stderr: [...t.stderr, p.line].slice(-200),
+      }));
+    }).then((u) => (unlistenStderr = u));
+
     onClaudeDone((p) => {
       const convId = findConvByRequestId(p.request_id);
       if (!convId) return;
-      finalize(convId, p.error ?? null);
+      finalize(convId, p.error ?? null, p.code);
     }).then((u) => (unlistenDone = u));
 
     return () => {
       unlistenEvent?.();
+      unlistenStderr?.();
       unlistenDone?.();
     };
   }, []);
@@ -368,12 +382,23 @@ export function useChats(notify: Notify = tryNotify) {
     patch(convId, (t) => ({ ...t, assistantId: null }));
   }
 
-  function finalize(convId: string, err: string | null) {
+  function finalize(convId: string, err: string | null, code: number | null = null) {
     finalizeAssistant(convId);
+    const tabBefore = tabsRef.current[convId];
+    // If the CLI failed with a non-zero exit but no explicit error string,
+    // promote the captured stderr tail into the surfaced error so the user
+    // sees something actionable instead of a silent failure.
+    let displayErr: string | null = err;
+    if (!displayErr && code !== null && code !== 0) {
+      const tail = (tabBefore?.stderr ?? []).slice(-8).join("\n").trim();
+      displayErr = tail
+        ? `claude exited with code ${code}\n${tail}`
+        : `claude exited with code ${code}`;
+    }
     patch(convId, (t) => ({
       ...t,
-      status: err ? "error" : "idle",
-      error: err,
+      status: displayErr ? "error" : "idle",
+      error: displayErr,
       requestId: null,
       toolByIndex: {},
       unread: t.convId === activeIdRef.current ? false : true,
@@ -381,8 +406,8 @@ export function useChats(notify: Notify = tryNotify) {
     const tab = tabsRef.current[convId];
     if (tab && convId !== activeIdRef.current) {
       notify(
-        err ? "Claude 出错了" : "Claude 回复完成",
-        `${tab.title}${err ? `\n${err}` : ""}`
+        displayErr ? "Claude 出错了" : "Claude 回复完成",
+        `${tab.title}${displayErr ? `\n${displayErr}` : ""}`
       );
     }
   }
@@ -415,6 +440,7 @@ export function useChats(notify: Notify = tryNotify) {
       messages: [],
       status: "idle",
       error: null,
+      stderr: [],
       unread: false,
       usage: {
         inputTokens: 0,
@@ -519,6 +545,7 @@ export function useChats(notify: Notify = tryNotify) {
         toolByIndex: {},
         status: "thinking",
         error: null,
+        stderr: [],
         messages: [
           ...t.messages,
           { kind: "text", id: userId, role: "user", text: prompt },

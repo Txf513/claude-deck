@@ -206,7 +206,7 @@ export function Sidebar({
           </span>
           <span className="cd-nav-label">插件 / Skills</span>
         </button>
-        <button className="cd-nav-item">
+        <button className="cd-nav-item" disabled title="即将推出">
           <span className="cd-nav-icon">
             <AutomationIcon />
           </span>

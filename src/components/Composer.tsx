@@ -563,7 +563,7 @@ export function Composer({
             )}
           </div>
 
-          <button className="cd-composer-btn" title="语音">
+          <button className="cd-composer-btn" title="语音（即将推出）" disabled>
             <MicIcon size={16} />
           </button>
           <button

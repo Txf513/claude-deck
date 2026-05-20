@@ -158,12 +158,12 @@ fn scan_session_file(path: &Path) -> Option<SessionInfo> {
         }
 
         let ty = v.get("type").and_then(|x| x.as_str()).unwrap_or("");
-        if ty == "user" || ty == "assistant" {
+        let is_meta = v.get("isMeta").and_then(|x| x.as_bool()).unwrap_or(false);
+        if (ty == "user" || ty == "assistant") && !is_meta {
             message_count += 1;
         }
 
         if first_prompt.is_none() && ty == "user" {
-            let is_meta = v.get("isMeta").and_then(|x| x.as_bool()).unwrap_or(false);
             if !is_meta {
                 if let Some(text) = v
                     .get("message")

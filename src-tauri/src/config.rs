@@ -250,6 +250,41 @@ fn read_settings_value() -> Result<Value, String> {
     serde_json::from_str(&content).map_err(|e| format!("settings.json parse error: {}", e))
 }
 
+// Deep-merge `local` into `global`. Objects are merged key-by-key; for any
+// other JSON shape (array, string, number, bool, null) the local value
+// replaces the global value entirely. This matches the convention of
+// `settings.local.json` overriding `settings.json` on a per-key basis.
+fn merge_settings(global: &mut Value, local: Value) {
+    match (global, local) {
+        (Value::Object(g), Value::Object(l)) => {
+            for (k, v) in l {
+                match g.get_mut(&k) {
+                    Some(existing) => merge_settings(existing, v),
+                    None => {
+                        g.insert(k, v);
+                    }
+                }
+            }
+        }
+        (slot, other) => {
+            *slot = other;
+        }
+    }
+}
+
+fn read_merged_settings() -> Result<Value, String> {
+    let mut merged = read_settings_value().unwrap_or(Value::Object(Map::new()));
+    let local_path = config_path("settings_local")?;
+    if local_path.exists() {
+        if let Ok(content) = fs::read_to_string(&local_path) {
+            if let Ok(local) = serde_json::from_str::<Value>(&content) {
+                merge_settings(&mut merged, local);
+            }
+        }
+    }
+    Ok(merged)
+}
+
 fn write_settings_value(value: &Value) -> Result<(), String> {
     let path = config_path("settings")?;
     ensure_backup(&path)?;
@@ -264,7 +299,7 @@ fn write_settings_value(value: &Value) -> Result<(), String> {
 
 #[tauri::command]
 pub fn list_plugins() -> Result<Vec<PluginInfo>, String> {
-    let settings = read_settings_value().unwrap_or(Value::Object(Map::new()));
+    let settings = read_merged_settings().unwrap_or(Value::Object(Map::new()));
     let enabled_map = settings
         .get("enabledPlugins")
         .and_then(|v| v.as_object())
@@ -499,23 +534,21 @@ pub fn list_models() -> Result<Vec<ModelOption>, String> {
         push(id, "catalog", &mut out, &mut seen);
     }
 
-    // 2) From user's settings.json env entries (preferred / pinned models).
+    // 2) From the user's merged settings (settings.json + settings.local.json overrides).
     // Skip *_NAME aliases — they're CLI display labels, not separate models.
-    if let Ok(content) = fs::read_to_string(claude_dir()?.join("settings.json")) {
-        if let Ok(v) = serde_json::from_str::<Value>(&content) {
-            if let Some(env) = v.get("env").and_then(|x| x.as_object()) {
-                for (k, val) in env {
-                    let upper = k.to_uppercase();
-                    if upper.contains("MODEL") && !upper.ends_with("_NAME") {
-                        if let Some(s) = val.as_str() {
-                            push(s, "settings.env", &mut out, &mut seen);
-                        }
+    if let Ok(v) = read_merged_settings() {
+        if let Some(env) = v.get("env").and_then(|x| x.as_object()) {
+            for (k, val) in env {
+                let upper = k.to_uppercase();
+                if upper.contains("MODEL") && !upper.ends_with("_NAME") {
+                    if let Some(s) = val.as_str() {
+                        push(s, "settings.env", &mut out, &mut seen);
                     }
                 }
             }
-            if let Some(m) = v.get("model").and_then(|x| x.as_str()) {
-                push(m, "settings.model", &mut out, &mut seen);
-            }
+        }
+        if let Some(m) = v.get("model").and_then(|x| x.as_str()) {
+            push(m, "settings.model", &mut out, &mut seen);
         }
     }
 

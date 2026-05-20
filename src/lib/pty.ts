@@ -4,7 +4,6 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 export type PtyDataPayload = { id: string; data: string };
 export type PtyExitPayload = { id: string; code: number | null };
 
-const enc = new TextEncoder();
 const dec = new TextDecoder();
 
 function b64encode(bytes: Uint8Array): string {
@@ -34,11 +33,6 @@ export async function spawnPty(opts: {
     cols: opts.cols,
     rows: opts.rows,
   });
-}
-
-export async function writePty(id: string, text: string): Promise<void> {
-  const data = b64encode(enc.encode(text));
-  await invoke("pty_write", { id, data });
 }
 
 export async function writePtyBytes(id: string, bytes: Uint8Array): Promise<void> {
