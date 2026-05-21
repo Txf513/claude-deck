@@ -29,6 +29,8 @@ type Props = {
   placeholder?: string;
   settings: ComposerSettings;
   onSettingsChange: (s: ComposerSettings) => void;
+  extraDirs: string[];
+  onExtraDirsChange: (next: string[]) => void;
   onSend: (text: string, attachments: Attachment[]) => void;
   onCancel: () => void;
   cwd?: string;
@@ -134,6 +136,8 @@ export function Composer({
   placeholder,
   settings,
   onSettingsChange,
+  extraDirs,
+  onExtraDirsChange,
   onSend,
   onCancel,
   usage,
@@ -145,6 +149,8 @@ export function Composer({
   const [permOpen, setPermOpen] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
   const [effortOpen, setEffortOpen] = useState(false);
+  const [dirOpen, setDirOpen] = useState(false);
+  const [dirInput, setDirInput] = useState("");
   const [systemOpen, setSystemOpen] = useState(false);
   const [models, setModels] = useState<ModelOption[]>(MODEL_FALLBACK);
   const [slashOpen, setSlashOpen] = useState(false);
@@ -222,6 +228,7 @@ export function Composer({
         setPermOpen(false);
         setModelOpen(false);
         setEffortOpen(false);
+        setDirOpen(false);
       }
     }
     window.addEventListener("mousedown", onClick);
@@ -417,6 +424,36 @@ export function Composer({
     setAttachments((a) => a.filter((x) => x.id !== id));
   }
 
+  function appendExtraDirs(next: string[]) {
+    const merged = [...extraDirs];
+    for (const item of next) {
+      if (!merged.includes(item)) merged.push(item);
+    }
+    onExtraDirsChange(merged);
+  }
+
+  function addDirFromInput() {
+    const next = dirInput.trim();
+    if (!next || extraDirs.includes(next)) return;
+    onExtraDirsChange([...extraDirs, next]);
+    setDirInput("");
+  }
+
+  async function pickExtraDirs() {
+    try {
+      const picked = await openDialog({
+        directory: true,
+        multiple: true,
+        title: "选择工作目录",
+      });
+      if (!picked) return;
+      const list = (Array.isArray(picked) ? picked : [picked]).map(String);
+      appendExtraDirs(list);
+    } catch (e) {
+      console.error("dialog failed", e);
+    }
+  }
+
   return (
     <div className="cd-composer-wrap" ref={wrapRef}>
       {lightbox && <Lightbox path={lightbox} onClose={() => setLightbox(null)} />}
@@ -540,6 +577,8 @@ export function Composer({
               onClick={() => {
                 setPermOpen((v) => !v);
                 setModelOpen(false);
+                setEffortOpen(false);
+                setDirOpen(false);
               }}
               style={{ color: permissionAccent(settings.permissionMode) }}
             >
@@ -578,6 +617,7 @@ export function Composer({
                 setEffortOpen((v) => !v);
                 setPermOpen(false);
                 setModelOpen(false);
+                setDirOpen(false);
               }}
               title="思考强度（--effort）。off 表示不传该参数。"
             >
@@ -604,6 +644,104 @@ export function Composer({
             )}
           </div>
 
+          <div className="cd-pop-wrap">
+            <button
+              className="cd-pill"
+              onClick={() => {
+                setDirOpen((v) => !v);
+                setPermOpen(false);
+                setEffortOpen(false);
+                setModelOpen(false);
+              }}
+              title="额外传给 Claude CLI 的工作目录（--add-dir）"
+            >
+              {extraDirs.length === 0
+                ? "+ 工作目录"
+                : `📁 工作目录 (${extraDirs.length})`}{" "}
+              <ChevronDown size={12} />
+            </button>
+            {dirOpen && (
+              <div className="cd-pop" style={{ minWidth: 320, gap: 6, padding: 8 }}>
+                {extraDirs.length === 0 ? (
+                  <div className="cd-pop-item-hint">未添加额外目录</div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {extraDirs.map((item) => (
+                      <div
+                        key={item}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          padding: "6px 8px",
+                          borderRadius: 6,
+                          background: "var(--bg-button-pill)",
+                        }}
+                      >
+                        <div
+                          className="cd-pop-item-hint cd-pop-item-mono"
+                          style={{ marginTop: 0, flex: 1 }}
+                          title={item}
+                        >
+                          {item}
+                        </div>
+                        <button
+                          className="cd-att-remove"
+                          onClick={() =>
+                            onExtraDirsChange(extraDirs.filter((d) => d !== item))
+                          }
+                          title="移除目录"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div style={{ display: "flex", gap: 6 }}>
+                  <button
+                    className="cd-pop-item active"
+                    onClick={pickExtraDirs}
+                    style={{ width: "auto" }}
+                  >
+                    选择目录…
+                  </button>
+                </div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input
+                    value={dirInput}
+                    onChange={(e) => setDirInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        addDirFromInput();
+                      }
+                    }}
+                    placeholder="输入目录路径"
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      border: "1px solid var(--border-medium)",
+                      borderRadius: 8,
+                      padding: "6px 8px",
+                      background: "var(--bg-input)",
+                      color: "var(--text-primary)",
+                      fontSize: 12,
+                      fontFamily: "var(--font-mono)",
+                    }}
+                  />
+                  <button
+                    className="cd-pop-item active"
+                    onClick={addDirFromInput}
+                    style={{ width: "auto", whiteSpace: "nowrap" }}
+                  >
+                    添加
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
           <div className="cd-composer-spacer" />
 
           {usage && <UsageChip usage={usage} />}
@@ -614,6 +752,8 @@ export function Composer({
               onClick={() => {
                 setModelOpen((v) => !v);
                 setPermOpen(false);
+                setEffortOpen(false);
+                setDirOpen(false);
               }}
             >
               {modelLabel(settings, models)} <ChevronDown size={12} />

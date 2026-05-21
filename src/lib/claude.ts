@@ -1,33 +1,12 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { commands, events, type ClaudeSendArgs, type ClaudeStreamEvent, type ClaudeStderrEvent, type ClaudeDoneEvent } from "./bindings";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 
-/**
- * Event channel names emitted by the Rust `claude` module. Mirrors
- * `src-tauri/src/claude.rs` constants — keep both sides in sync.
- */
-export const EVENT_STREAM = "claude:event";
-export const EVENT_STDERR = "claude:stderr";
-export const EVENT_DONE = "claude:done";
+export type ClaudeEventPayload = ClaudeStreamEvent;
+export type ClaudeStderrPayload = ClaudeStderrEvent;
+export type ClaudeDonePayload = ClaudeDoneEvent;
 
-export type ClaudeEventPayload = { request_id: string; line: string };
-export type ClaudeStderrPayload = { request_id: string; line: string };
-export type ClaudeDonePayload = {
-  request_id: string;
-  code: number | null;
-  error: string | null;
-};
-
-export type SendArgs = {
-  request_id: string;
-  prompt: string;
-  cwd: string;
-  resume_session_id?: string | null;
-  claude_bin?: string | null;
-  skip_permissions?: boolean;
+export type SendArgs = ClaudeSendArgs & {
   permission_mode?: PermissionMode | null;
-  model?: string | null;
-  system_prompt?: string | null;
-  append_system_prompt?: string | null;
   effort?: Effort | null;
 };
 
@@ -41,30 +20,37 @@ export type PermissionMode =
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
+function unwrap<T>(
+  r: { status: "ok"; data: T } | { status: "error"; error: string }
+): T {
+  if (r.status === "error") throw new Error(r.error);
+  return r.data;
+}
+
 export async function claudeSend(args: SendArgs): Promise<void> {
-  await invoke("claude_send", { args });
+  unwrap(await commands.claudeSend(args as ClaudeSendArgs));
 }
 
 export async function claudeCancel(requestId: string): Promise<void> {
-  await invoke("claude_cancel", { requestId });
+  unwrap(await commands.claudeCancel(requestId));
 }
 
 export async function onClaudeEvent(
   cb: (payload: ClaudeEventPayload) => void
 ): Promise<UnlistenFn> {
-  return await listen<ClaudeEventPayload>(EVENT_STREAM, (e) => cb(e.payload));
+  return await events.claudeStreamEvent.listen((e) => cb(e.payload));
 }
 
 export async function onClaudeStderr(
   cb: (payload: ClaudeStderrPayload) => void
 ): Promise<UnlistenFn> {
-  return await listen<ClaudeStderrPayload>(EVENT_STDERR, (e) => cb(e.payload));
+  return await events.claudeStderrEvent.listen((e) => cb(e.payload));
 }
 
 export async function onClaudeDone(
   cb: (payload: ClaudeDonePayload) => void
 ): Promise<UnlistenFn> {
-  return await listen<ClaudeDonePayload>(EVENT_DONE, (e) => cb(e.payload));
+  return await events.claudeDoneEvent.listen((e) => cb(e.payload));
 }
 
 export type ReplayEntry = {
@@ -84,6 +70,7 @@ export type ReplayEntry = {
 export type ReplayResult = {
   session_id: string | null;
   entries: ReplayEntry[];
+  messages: ReplayMessage[];
   cwd: string | null;
   total_input_tokens: number;
   total_output_tokens: number;
@@ -97,8 +84,38 @@ export type ReplayResult = {
   last_cache_creation_tokens: number;
 };
 
+export type ReplayMessage = {
+  id: string;
+  role: "user" | "assistant" | string;
+  text: string;
+  timestamp: string | null;
+  tool_name: string | null;
+  is_meta: boolean;
+};
+
+export type ReplayPage = ReplayResult & {
+  total_message_count: number;
+  returned_message_count: number;
+  has_more_before: boolean;
+  earliest_uuid: string | null;
+};
+
+export type ReplayPageQuery = { limit?: number; beforeUuid?: string };
+
 export async function replaySession(filePath: string): Promise<ReplayResult> {
-  return await invoke<ReplayResult>("replay_session", { filePath });
+  return unwrap(await commands.replaySession(filePath)) as ReplayResult;
+}
+
+export async function replaySessionPaged(
+  filePath: string,
+  query?: ReplayPageQuery
+): Promise<ReplayPage> {
+  return unwrap(
+    await commands.replaySessionPaged(filePath, {
+      limit: query?.limit ?? null,
+      beforeUuid: query?.beforeUuid ?? null,
+    })
+  );
 }
 
 // Stream-json event types we care about, parsed loosely.

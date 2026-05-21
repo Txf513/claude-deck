@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { open as openDialog, save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { useEffect, useMemo, useState } from "react";
 import {
   AutomationIcon,
   ChevronDown,
@@ -12,8 +13,12 @@ import {
 } from "./Icons";
 import {
   archiveSession,
+  backupDefaultName,
   deleteSession,
+  exportAllProjects,
+  exportProject,
   formatRelative,
+  importBackup,
   listProjects,
   listSessions,
   renameSession,
@@ -67,6 +72,28 @@ export function Sidebar({
     session: SessionInfo;
   } | null>(null);
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
+  const [backupOpen, setBackupOpen] = useState(false);
+  const [backupBusy, setBackupBusy] = useState(false);
+  const [backupError, setBackupError] = useState<string | null>(null);
+  const [backupStatus, setBackupStatus] = useState<string | null>(null);
+
+  const activeProjectFolder = useMemo(() => {
+    if (!activeKey) return null;
+    if (activeKey.startsWith("tab:")) {
+      const convId = activeKey.slice(4);
+      const tab = openTabs.find((item) => item.convId === convId);
+      if (!tab) return null;
+      if (tab.filePath) {
+        return tab.filePath.split("/").slice(-2, -1)[0] ?? null;
+      }
+      return projects.find((project) => project.path === tab.cwd)?.folder ?? null;
+    }
+    return activeKey.split("/", 1)[0] ?? null;
+  }, [activeKey, openTabs, projects]);
+
+  const activeProjectName =
+    projects.find((project) => project.folder === activeProjectFolder)?.name ??
+    null;
 
   useEffect(() => {
     if (!menu) return;
@@ -80,6 +107,25 @@ export function Sidebar({
       window.removeEventListener("scroll", close, true);
     };
   }, [menu]);
+
+  useEffect(() => {
+    if (!backupOpen) return;
+    function close() {
+      if (!backupBusy) setBackupOpen(false);
+    }
+    window.addEventListener("click", close);
+    window.addEventListener("scroll", close, true);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("scroll", close, true);
+    };
+  }, [backupBusy, backupOpen]);
+
+  useEffect(() => {
+    if (!backupStatus) return;
+    const timer = window.setTimeout(() => setBackupStatus(null), 3000);
+    return () => window.clearTimeout(timer);
+  }, [backupStatus]);
 
   function reloadFolder(folder: string) {
     listSessions(folder, 30)
@@ -127,6 +173,80 @@ export function Sidebar({
     } catch (e) {
       console.error("delete failed", e);
       alert(`删除失败: ${e}`);
+    }
+  }
+
+  async function pickSavePath(scope: "all" | string) {
+    const path = await saveDialog({
+      defaultPath: backupDefaultName(scope),
+      filters: [{ name: "tarball", extensions: ["tar.gz"] }],
+    });
+    if (!path || Array.isArray(path)) return null;
+    return path;
+  }
+
+  async function runBackup(scope: "all" | "project") {
+    const folder = activeProjectFolder;
+    if (scope === "project" && !folder) {
+      setBackupError("先选中项目");
+      return;
+    }
+
+    setBackupError(null);
+    setBackupStatus(null);
+    const path = await pickSavePath(scope === "all" ? "all" : folder!);
+    if (!path) return;
+
+    try {
+      setBackupBusy(true);
+      const result =
+        scope === "all"
+          ? await exportAllProjects(path)
+          : await exportProject(folder!, path);
+      setBackupStatus(
+        `已备份 ${result.project_count} 个项目 / ${result.session_count} 个会话 → ${result.path}`
+      );
+    } catch (error) {
+      console.error("backup failed", error);
+      setBackupError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBackupBusy(false);
+    }
+  }
+
+  async function runRestore() {
+    setBackupError(null);
+    setBackupStatus(null);
+
+    const selected = await openDialog({
+      multiple: false,
+      directory: false,
+      filters: [{ name: "tarball", extensions: ["tar.gz", "tgz"] }],
+      title: "选择备份文件",
+    });
+    if (!selected || Array.isArray(selected)) return;
+
+    const archivePath = String(selected);
+    if (
+      !window.confirm(
+        `将从 ${archivePath} 还原会话到 ~/.claude/projects/。已存在的同名会话将被跳过。是否继续？`
+      )
+    ) {
+      return;
+    }
+
+    try {
+      setBackupBusy(true);
+      const result = await importBackup(archivePath);
+      setBackupStatus(
+        `已导入 ${result.project_count} 个项目 / ${result.imported_session_count} 个会话（跳过 ${result.skipped_session_count} 个；标题：新增 ${result.titles_added}、保留 ${result.titles_kept}）`
+      );
+      await refresh();
+    } catch (error) {
+      console.error("restore failed", error);
+      setBackupError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBackupBusy(false);
     }
   }
 
@@ -361,6 +481,86 @@ export function Sidebar({
           >
             ☾ 深色
           </button>
+        </div>
+        <div className="cd-pop-wrap">
+          <button
+            className="cd-foot-btn"
+            disabled={backupBusy}
+            onClick={(e) => {
+              e.stopPropagation();
+              setBackupOpen((open) => !open);
+              setBackupError(null);
+            }}
+          >
+            <span style={{ fontSize: 14 }}>{backupBusy ? "…" : "⤓"}</span>
+            {backupBusy ? "处理中…" : "备份"}
+          </button>
+          {backupOpen && (
+            <div
+              className="cd-pop cd-pop-right"
+              style={{ minWidth: 320, padding: 8, gap: 6 }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {backupStatus && (
+                <div
+                  className="cd-pop-item-hint"
+                  style={{ padding: "4px 6px", whiteSpace: "normal" }}
+                >
+                  {backupStatus}
+                </div>
+              )}
+              {backupError && (
+                <div
+                  className="cd-pop-item-hint"
+                  style={{
+                    padding: "4px 6px",
+                    whiteSpace: "normal",
+                    color: "var(--danger)",
+                  }}
+                >
+                  {backupError}
+                </div>
+              )}
+              <button
+                className="cd-pop-item"
+                disabled={backupBusy}
+                onClick={() => runBackup("all")}
+              >
+                <div className="cd-pop-item-label">备份所有项目…</div>
+                <div className="cd-pop-item-hint">导出全部项目会话和自定义标题</div>
+              </button>
+              <button
+                className="cd-pop-item"
+                disabled={backupBusy || !activeProjectFolder}
+                title={activeProjectFolder ? undefined : "先选中项目"}
+                onClick={() => runBackup("project")}
+              >
+                <div className="cd-pop-item-label">备份当前项目…</div>
+                <div className="cd-pop-item-hint">
+                  {activeProjectName
+                    ? `当前项目：${activeProjectName}`
+                    : "先选中项目"}
+                </div>
+              </button>
+              <div
+                aria-hidden
+                style={{
+                  borderTop: "1px solid var(--border)",
+                  margin: "4px 0",
+                }}
+              />
+              <button
+                className="cd-pop-item"
+                disabled={backupBusy}
+                onClick={runRestore}
+              >
+                <div className="cd-pop-item-label">从备份恢复…</div>
+                <div className="cd-pop-item-hint">
+                  跳过已存在的会话；自定义标题不覆盖现有
+                </div>
+              </button>
+            </div>
+          )}
         </div>
         <button className="cd-foot-btn" onClick={onOpenLegacyTerminal}>
           <span style={{ fontSize: 14 }}>▦</span> 终端模式

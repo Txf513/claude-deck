@@ -1,73 +1,83 @@
-import { invoke } from "@tauri-apps/api/core";
+import {
+  commands,
+  type ProjectInfo as BProject,
+  type SessionInfo as BSession,
+  type SearchHit as BSearchHit,
+  type FileHit as BFileHit,
+  type ExportResult as BExportResult,
+  type ImportResult as BImportResult,
+} from "./bindings";
 
-export type ProjectInfo = {
-  name: string;
-  path: string;
-  folder: string;
-  session_count: number;
-  last_activity_ms: number;
-};
+export type ProjectInfo = BProject;
+export type SessionInfo = BSession;
+export type SearchHit = BSearchHit;
+export type FileHit = BFileHit;
+export type ExportResult = BExportResult;
+export type ImportResult = BImportResult;
 
-export type SessionInfo = {
-  id: string;
-  cwd: string | null;
-  first_prompt: string | null;
-  last_activity: string | null;
-  mtime_ms: number;
-  message_count: number;
-  file_path: string;
-};
+function unwrap<T>(
+  r: { status: "ok"; data: T } | { status: "error"; error: string }
+): T {
+  if (r.status === "error") throw new Error(r.error);
+  return r.data;
+}
 
 export async function listProjects(): Promise<ProjectInfo[]> {
-  return await invoke<ProjectInfo[]>("list_projects");
+  return await commands.listProjects();
 }
 
 export async function listSessions(folder: string, limit = 20): Promise<SessionInfo[]> {
-  return await invoke<SessionInfo[]>("list_sessions", { folder, limit });
+  return await commands.listSessions(folder, limit);
 }
-
-export type SearchHit = {
-  session_id: string;
-  file_path: string;
-  project_folder: string;
-  project_path: string;
-  project_name: string;
-  role: "user" | "assistant" | string;
-  snippet: string;
-  timestamp: string | null;
-  mtime_ms: number;
-  uuid: string | null;
-  entry_kind: string | null;
-  tool_name: string | null;
-};
 
 export async function searchSessions(query: string, limit = 50): Promise<SearchHit[]> {
-  return await invoke<SearchHit[]>("search_sessions", { query, limit });
+  return await commands.searchSessions(query, limit);
 }
-
-export type FileHit = {
-  rel_path: string;
-  abs_path: string;
-};
 
 export async function searchFiles(
   cwd: string,
   query: string,
   limit = 30
 ): Promise<FileHit[]> {
-  return await invoke<FileHit[]>("search_files", { cwd, query, limit });
+  return unwrap(await commands.searchFiles(cwd, query, limit));
 }
 
 export async function renameSession(filePath: string, newTitle: string): Promise<void> {
-  await invoke("rename_session", { filePath, newTitle });
+  unwrap(await commands.renameSession(filePath, newTitle));
 }
 
 export async function archiveSession(filePath: string): Promise<string> {
-  return await invoke<string>("archive_session", { filePath });
+  return unwrap(await commands.archiveSession(filePath));
 }
 
 export async function deleteSession(filePath: string): Promise<void> {
-  await invoke("delete_session", { filePath });
+  unwrap(await commands.deleteSession(filePath));
+}
+
+export async function exportAllProjects(outPath: string): Promise<ExportResult> {
+  return unwrap(await commands.exportAllProjects(outPath));
+}
+
+export async function exportProject(
+  folder: string,
+  outPath: string
+): Promise<ExportResult> {
+  return unwrap(await commands.exportProject(folder, outPath));
+}
+
+export async function importBackup(archivePath: string): Promise<ImportResult> {
+  return unwrap(await commands.importBackup(archivePath));
+}
+
+export function backupDefaultName(scope: "all" | string, now: Date = new Date()): string {
+  const yyyy = String(now.getFullYear());
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const dd = String(now.getDate()).padStart(2, "0");
+  const hh = String(now.getHours()).padStart(2, "0");
+  const min = String(now.getMinutes()).padStart(2, "0");
+  const safeScope =
+    scope === "all" ? "all" : scope.replace(/[^A-Za-z0-9._-]/g, "_");
+  return `claude-deck-backup-${safeScope}-${yyyy}${mm}${dd}-${hh}${min}.tar.gz`;
 }
 
 export function shortLabel(s: SessionInfo): string {

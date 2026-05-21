@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import rehypeHighlight from "rehype-highlight";
@@ -8,6 +9,7 @@ import { ChevronDown, ChevronRight } from "./Icons";
 import { LocalImage } from "./LocalImage";
 import { Lightbox } from "./Lightbox";
 import { writeTextFile } from "../lib/config";
+import { classifyError, type ErrorKind } from "../lib/errorClassify";
 import type { ChatMessage, ToolCall } from "../lib/chatTypes";
 
 type Props = {
@@ -17,8 +19,17 @@ type Props = {
   status: "idle" | "thinking" | "streaming" | "error";
   error?: string | null;
   stderr?: string[];
+  exitCode?: number;
   highlightId?: string | null;
   onHighlightConsumed?: () => void;
+  onRetry?: () => void;
+  canRetry?: boolean;
+  onLoadEarlier?: () => void;
+  replayLoadState?: {
+    hasMoreBefore: boolean;
+    loadingBefore: boolean;
+    remaining: number;
+  };
 };
 
 export function ChatView({
@@ -28,8 +39,13 @@ export function ChatView({
   status,
   error,
   stderr,
+  exitCode,
   highlightId,
   onHighlightConsumed,
+  onRetry,
+  canRetry,
+  onLoadEarlier,
+  replayLoadState,
 }: Props) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [lightbox, setLightbox] = useState<string | null>(null);
@@ -39,6 +55,15 @@ export function ChatView({
       ? (messages[messages.length - 1] as { text: string }).text.length
       : 0;
   const userScrolledRef = useRef(false);
+  const virtualizer = useVirtualizer({
+    count: messages.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: () => 120,
+    overscan: 8,
+    measureElement: (element) =>
+      element?.getBoundingClientRect().height ?? 0,
+  });
+  const virtualItems = messages.length > 0 ? virtualizer.getVirtualItems() : [];
 
   // Track whether user has scrolled up; if so, suppress auto-scroll.
   useEffect(() => {
@@ -56,10 +81,10 @@ export function ChatView({
 
   useEffect(() => {
     if (highlightId) return; // when jumping, don't auto-scroll to bottom
-    const el = scrollRef.current;
-    if (!el) return;
+    if (messages.length === 0) return;
+    if (!scrollRef.current) return;
     if (userScrolledRef.current) return;
-    el.scrollTop = el.scrollHeight;
+    virtualizer.scrollToIndex(messages.length - 1, { align: "end" });
   }, [messages.length, lastTextLen, highlightId]);
 
   // Jump-to-message support (search result click).
@@ -67,6 +92,10 @@ export function ChatView({
     if (!highlightId) return;
     const el = scrollRef.current;
     if (!el) return;
+    const idx = messages.findIndex((message) => message.id === highlightId);
+    if (idx >= 0) {
+      virtualizer.scrollToIndex(idx, { align: "center" });
+    }
     let cancelled = false;
     function tryScroll(attempt: number) {
       if (cancelled) return;
@@ -137,16 +166,67 @@ export function ChatView({
       </header>
       <div className="cd-chat-scroll" ref={scrollRef}>
         <div className="cd-chat-inner">
+          {replayLoadState?.hasMoreBefore && (
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "center",
+                marginBottom: 16,
+              }}
+            >
+              {replayLoadState.loadingBefore ? (
+                <ThinkingDots />
+              ) : (
+                <button className="cd-foot-btn" onClick={onLoadEarlier}>
+                  加载更早 (剩余 {replayLoadState.remaining})
+                </button>
+              )}
+            </div>
+          )}
           {messages.length === 0 ? (
             <EmptyState />
           ) : (
-            messages.map((m) => (
-              <Bubble key={m.id} message={m} onImageClick={setLightbox} />
-            ))
+            <div
+              style={{
+                height: `${virtualizer.getTotalSize()}px`,
+                position: "relative",
+              }}
+            >
+              {virtualItems.map((virtualRow) => {
+                const message = messages[virtualRow.index];
+                return (
+                  <div
+                    key={message.id}
+                    ref={virtualizer.measureElement}
+                    data-index={virtualRow.index}
+                    data-msg-id={message.id}
+                    style={{
+                      left: 0,
+                      paddingBottom:
+                        virtualRow.index === messages.length - 1 ? 0 : 16,
+                      position: "absolute",
+                      top: 0,
+                      transform: `translateY(${virtualRow.start}px)`,
+                      width: "100%",
+                    }}
+                  >
+                    <Bubble message={message} onImageClick={setLightbox} />
+                  </div>
+                );
+              })}
+            </div>
           )}
           {status === "thinking" && <ThinkingDots />}
-          {(error || (stderr && stderr.length > 0)) && (
-            <ChatErrorBlock error={error ?? null} stderr={stderr ?? []} />
+          {(error ||
+            (stderr && stderr.length > 0) ||
+            (exitCode !== undefined && exitCode !== 0)) && (
+            <ChatErrorBlock
+              error={error ?? null}
+              stderr={stderr ?? []}
+              exitCode={exitCode}
+              onRetry={onRetry}
+              canRetry={canRetry}
+            />
           )}
         </div>
       </div>
@@ -154,19 +234,55 @@ export function ChatView({
   );
 }
 
+const ERROR_KIND_EMOJI: Record<ErrorKind, string> = {
+  "cli-missing": "❓",
+  permission: "🔒",
+  "rate-limit": "⏱",
+  crashed: "💥",
+  unknown: "⚠️",
+};
+
 function ChatErrorBlock({
   error,
   stderr,
+  exitCode,
+  onRetry,
+  canRetry,
 }: {
   error: string | null;
   stderr: string[];
+  exitCode?: number;
+  onRetry?: () => void;
+  canRetry?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const hasStderr = stderr.length > 0;
+  const detail = error?.trim() ?? "";
+  const classified = classifyError({ error, stderr, exitCode });
   return (
     <div className="cd-chat-error">
-      {error && <div>{error}</div>}
-      {!error && hasStderr && <div>Claude CLI 输出了诊断信息</div>}
+      {classified && (
+        <div
+          style={{
+            alignItems: "center",
+            display: "flex",
+            gap: 8,
+          }}
+        >
+          <span>{ERROR_KIND_EMOJI[classified.kind]}</span>
+          <span>{classified.message}</span>
+          <button
+            className="cd-foot-btn"
+            style={{ marginLeft: "auto" }}
+            disabled={!canRetry || !onRetry}
+            onClick={() => onRetry?.()}
+          >
+            重试
+          </button>
+        </div>
+      )}
+      {detail && <div style={{ marginTop: classified ? 8 : 0 }}>{detail}</div>}
+      {!classified && !detail && hasStderr && <div>Claude CLI 输出了诊断信息</div>}
       {hasStderr && (
         <>
           <button

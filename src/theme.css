@@ -39,6 +39,13 @@
   --font-sans: -apple-system, BlinkMacSystemFont, "PingFang SC",
     "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+
+  --cd-font-scale: 1;
+}
+
+.cd-root,
+.config-view {
+  zoom: var(--cd-font-scale);
 }
 
 [data-theme="dark"] {

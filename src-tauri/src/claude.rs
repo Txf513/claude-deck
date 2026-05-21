@@ -1,53 +1,53 @@
 use std::collections::HashMap;
+use std::ffi::OsString;
+use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use specta::Type;
+use tauri::{AppHandle, State};
+use tauri_specta::Event;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::oneshot;
 
 use crate::path_util::{augmented_path, resolve_claude_bin};
 
-/// Event channel names emitted from the claude module. Frontend listeners must
-/// subscribe to these exact strings — keep `src/lib/claude.ts` in sync.
-pub const EVENT_STREAM: &str = "claude:event";
-pub const EVENT_STDERR: &str = "claude:stderr";
-pub const EVENT_DONE: &str = "claude:done";
-
 #[derive(Default, Clone)]
 pub struct ClaudeState {
     inflight: Arc<Mutex<HashMap<String, oneshot::Sender<()>>>>,
 }
 
-#[derive(Clone, Serialize)]
-struct ClaudeEventPayload {
-    request_id: String,
-    line: String,
+#[derive(Clone, Serialize, Type, Event)]
+pub struct ClaudeStreamEvent {
+    pub request_id: String,
+    pub line: String,
 }
 
-#[derive(Clone, Serialize)]
-struct ClaudeStderrPayload {
-    request_id: String,
-    line: String,
+#[derive(Clone, Serialize, Type, Event)]
+pub struct ClaudeStderrEvent {
+    pub request_id: String,
+    pub line: String,
 }
 
-#[derive(Clone, Serialize)]
-struct ClaudeDonePayload {
-    request_id: String,
-    code: Option<i32>,
-    error: Option<String>,
+#[derive(Clone, Serialize, Type, Event)]
+pub struct ClaudeDoneEvent {
+    pub request_id: String,
+    pub code: Option<i32>,
+    pub error: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Type)]
 pub struct ClaudeSendArgs {
     pub request_id: String,
     pub prompt: String,
     pub cwd: String,
     pub resume_session_id: Option<String>,
     pub claude_bin: Option<String>,
+    #[serde(default)]
+    pub extra_dirs: Vec<String>,
     #[serde(default)]
     pub skip_permissions: bool,
     pub permission_mode: Option<String>,
@@ -60,13 +60,67 @@ pub struct ClaudeSendArgs {
     pub effort: Option<String>,
 }
 
+fn build_claude_argv(args: &ClaudeSendArgs, bin: &Path) -> Vec<OsString> {
+    fn push_arg_pair(argv: &mut Vec<OsString>, flag: &str, value: &str) {
+        argv.push(flag.into());
+        argv.push(value.into());
+    }
+
+    let mut argv = vec![bin.as_os_str().to_os_string()];
+    push_arg_pair(&mut argv, "--output-format", "stream-json");
+    argv.push("--include-partial-messages".into());
+    argv.push("--verbose".into());
+
+    if args.skip_permissions {
+        argv.push("--dangerously-skip-permissions".into());
+    } else if let Some(mode) = args.permission_mode.as_deref() {
+        if !mode.is_empty() && mode != "default" {
+            push_arg_pair(&mut argv, "--permission-mode", mode);
+        }
+    }
+
+    if let Some(model) = args.model.as_deref() {
+        if !model.is_empty() {
+            push_arg_pair(&mut argv, "--model", model);
+        }
+    }
+    if let Some(sp) = args.system_prompt.as_deref() {
+        if !sp.is_empty() {
+            push_arg_pair(&mut argv, "--system-prompt", sp);
+        }
+    }
+    if let Some(asp) = args.append_system_prompt.as_deref() {
+        if !asp.is_empty() {
+            push_arg_pair(&mut argv, "--append-system-prompt", asp);
+        }
+    }
+    if let Some(effort) = args.effort.as_deref() {
+        if !effort.is_empty() {
+            push_arg_pair(&mut argv, "--effort", effort);
+        }
+    }
+    if let Some(sid) = args.resume_session_id.as_deref() {
+        push_arg_pair(&mut argv, "--resume", sid);
+    }
+    for dir in &args.extra_dirs {
+        let trimmed = dir.trim();
+        if !trimmed.is_empty() {
+            push_arg_pair(&mut argv, "--add-dir", trimmed);
+        }
+    }
+
+    push_arg_pair(&mut argv, "-p", &args.prompt);
+    argv
+}
+
 #[tauri::command]
+#[specta::specta]
 pub async fn claude_send(
     app: AppHandle,
     state: State<'_, ClaudeState>,
     args: ClaudeSendArgs,
 ) -> Result<(), String> {
-    let bin = resolve_claude_bin(args.claude_bin).ok_or("claude binary not found")?;
+    let bin = resolve_claude_bin(args.claude_bin.clone()).ok_or("claude binary not found")?;
 
     if !std::path::Path::new(&args.cwd).is_dir() {
         return Err(format!(
@@ -75,43 +129,9 @@ pub async fn claude_send(
         ));
     }
 
+    let argv = build_claude_argv(&args, &bin);
     let mut cmd = Command::new(&bin);
-    cmd.arg("-p")
-        .arg(&args.prompt)
-        .arg("--output-format")
-        .arg("stream-json")
-        .arg("--include-partial-messages")
-        .arg("--verbose");
-    if args.skip_permissions {
-        cmd.arg("--dangerously-skip-permissions");
-    } else if let Some(mode) = args.permission_mode.as_deref() {
-        if !mode.is_empty() && mode != "default" {
-            cmd.arg("--permission-mode").arg(mode);
-        }
-    }
-    if let Some(model) = args.model.as_deref() {
-        if !model.is_empty() {
-            cmd.arg("--model").arg(model);
-        }
-    }
-    if let Some(sp) = args.system_prompt.as_deref() {
-        if !sp.is_empty() {
-            cmd.arg("--system-prompt").arg(sp);
-        }
-    }
-    if let Some(asp) = args.append_system_prompt.as_deref() {
-        if !asp.is_empty() {
-            cmd.arg("--append-system-prompt").arg(asp);
-        }
-    }
-    if let Some(effort) = args.effort.as_deref() {
-        if !effort.is_empty() {
-            cmd.arg("--effort").arg(effort);
-        }
-    }
-    if let Some(sid) = args.resume_session_id.as_ref() {
-        cmd.arg("--resume").arg(sid);
-    }
+    cmd.args(argv.into_iter().skip(1));
     cmd.current_dir(&args.cwd);
     cmd.env("PATH", augmented_path());
     cmd.env("TERM", "dumb");
@@ -135,13 +155,11 @@ pub async fn claude_send(
     let stdout_task = tokio::spawn(async move {
         let mut reader = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = reader.next_line().await {
-            let _ = app_for_stdout.emit(
-                EVENT_STREAM,
-                ClaudeEventPayload {
-                    request_id: req_id_stdout.clone(),
-                    line,
-                },
-            );
+            let _ = ClaudeStreamEvent {
+                request_id: req_id_stdout.clone(),
+                line,
+            }
+            .emit(&app_for_stdout);
         }
     });
 
@@ -150,13 +168,11 @@ pub async fn claude_send(
     let stderr_task = tokio::spawn(async move {
         let mut reader = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = reader.next_line().await {
-            let _ = app_for_stderr.emit(
-                EVENT_STDERR,
-                ClaudeStderrPayload {
-                    request_id: req_id_stderr.clone(),
-                    line,
-                },
-            );
+            let _ = ClaudeStderrEvent {
+                request_id: req_id_stderr.clone(),
+                line,
+            }
+            .emit(&app_for_stderr);
         }
     });
 
@@ -187,24 +203,96 @@ pub async fn claude_send(
             Err(e) => (None, Some(e)),
         };
         inflight_for_cleanup.lock().remove(&req_id_for_done);
-        let _ = app_for_done.emit(
-            EVENT_DONE,
-            ClaudeDonePayload {
-                request_id: req_id_for_done,
-                code,
-                error: err,
-            },
-        );
+        let _ = ClaudeDoneEvent {
+            request_id: req_id_for_done,
+            code,
+            error: err,
+        }
+        .emit(&app_for_done);
     });
 
     Ok(())
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn claude_cancel(state: State<'_, ClaudeState>, request_id: String) -> Result<(), String> {
     let mut inflight = state.inflight.lock();
     if let Some(tx) = inflight.remove(&request_id) {
         let _ = tx.send(());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use super::{build_claude_argv, ClaudeSendArgs};
+
+    fn sample_args() -> ClaudeSendArgs {
+        ClaudeSendArgs {
+            request_id: "req-1".into(),
+            prompt: "hello".into(),
+            cwd: "/tmp".into(),
+            resume_session_id: None,
+            claude_bin: None,
+            skip_permissions: false,
+            permission_mode: None,
+            model: None,
+            system_prompt: None,
+            append_system_prompt: None,
+            effort: None,
+            extra_dirs: vec![],
+        }
+    }
+
+    fn argv_strings(args: &ClaudeSendArgs) -> Vec<String> {
+        build_claude_argv(args, Path::new("/usr/local/bin/claude"))
+            .into_iter()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn build_claude_argv_omits_add_dir_when_extra_dirs_empty() {
+        let argv = argv_strings(&sample_args());
+        assert!(!argv.iter().any(|arg| arg == "--add-dir"));
+    }
+
+    #[test]
+    fn build_claude_argv_keeps_non_blank_extra_dirs_in_order() {
+        let mut args = sample_args();
+        args.extra_dirs = vec!["/a".into(), "  ".into(), "/b".into()];
+
+        let argv = argv_strings(&args);
+        let add_dir_idx = argv.iter().position(|arg| arg == "--add-dir").unwrap();
+
+        assert_eq!(
+            argv[add_dir_idx..add_dir_idx + 4].to_vec(),
+            vec![
+                "--add-dir".to_string(),
+                "/a".to_string(),
+                "--add-dir".to_string(),
+                "/b".to_string(),
+            ]
+        );
+        assert_eq!(argv.iter().filter(|arg| *arg == "--add-dir").count(), 2);
+    }
+
+    #[test]
+    fn build_claude_argv_places_add_dir_after_resume_before_prompt() {
+        let mut args = sample_args();
+        args.resume_session_id = Some("sess-1".into());
+        args.model = Some("sonnet".into());
+        args.extra_dirs = vec!["/a".into()];
+
+        let argv = argv_strings(&args);
+        let resume_idx = argv.iter().position(|arg| arg == "--resume").unwrap();
+        let add_dir_idx = argv.iter().position(|arg| arg == "--add-dir").unwrap();
+        let prompt_idx = argv.iter().position(|arg| arg == "hello").unwrap();
+
+        assert!(add_dir_idx > resume_idx);
+        assert!(add_dir_idx < prompt_idx);
+    }
 }

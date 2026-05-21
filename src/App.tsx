@@ -12,7 +12,7 @@ import { SearchOverlay } from "./components/SearchOverlay";
 import { Sidebar, type ConvSelection } from "./components/Sidebar";
 import { TerminalView, endSession } from "./components/TerminalView";
 import { useChats } from "./hooks/useChats";
-import { replaySession } from "./lib/claude";
+import { replaySession, replaySessionPaged } from "./lib/claude";
 import { getHomeDir, resolveClaudeBin, spawnPty } from "./lib/pty";
 import {
   listSessions,
@@ -41,6 +41,15 @@ type Theme = "light" | "dark";
 
 const THEME_KEY = "cd:theme";
 const COMPOSER_KEY = "cd:composer";
+const FONT_SCALE_KEY = "cd:font-scale";
+const FONT_SCALE_MIN = 0.85;
+const FONT_SCALE_MAX = 1.4;
+const PAGINATION_THRESHOLD = 1500;
+
+function clampFontScale(value: number): number {
+  if (!Number.isFinite(value)) return 1;
+  return Math.min(FONT_SCALE_MAX, Math.max(FONT_SCALE_MIN, value));
+}
 
 const DEFAULT_COMPOSER: ComposerSettings = {
   permissionMode: "default",
@@ -55,6 +64,17 @@ function readTheme(): Theme {
     if (v === "dark" || v === "light") return v;
   } catch {}
   return "light";
+}
+
+function readFontScale(): number {
+  try {
+    const v = localStorage.getItem(FONT_SCALE_KEY);
+    if (v) {
+      const n = Number(v);
+      if (Number.isFinite(n)) return clampFontScale(n);
+    }
+  } catch {}
+  return 1;
 }
 
 function readComposerSettings(): ComposerSettings {
@@ -88,12 +108,24 @@ export default function App() {
   const [legacyTabs, setLegacyTabs] = useState<LegacyTab[]>([]);
   const [legacyActiveId, setLegacyActiveId] = useState<string | null>(null);
   const [theme, setTheme] = useState<Theme>(readTheme);
+  const [fontScale, setFontScale] = useState<number>(readFontScale);
   const [searchOpen, setSearchOpen] = useState(false);
   const [highlightId, setHighlightId] = useState<string | null>(null);
   const [composerSettings, setComposerSettings] = useState<ComposerSettings>(
     readComposerSettings
   );
-  const chats = useChats();
+  const currentSendContext = useMemo(() => {
+    const trimmedAppend = composerSettings.appendSystemPrompt.trim();
+    return {
+      claudeBin,
+      permissionMode: composerSettings.permissionMode,
+      model: modelArg(composerSettings),
+      effort:
+        composerSettings.effort === "off" ? null : composerSettings.effort,
+      appendSystemPrompt: trimmedAppend || null,
+    };
+  }, [claudeBin, composerSettings]);
+  const chats = useChats(undefined, currentSendContext);
   const [homeDir, setHomeDir] = useState<string>("");
 
   useEffect(() => {
@@ -107,6 +139,16 @@ export default function App() {
       localStorage.setItem(THEME_KEY, theme);
     } catch {}
   }, [theme]);
+
+  useEffect(() => {
+    document.documentElement.style.setProperty(
+      "--cd-font-scale",
+      String(fontScale)
+    );
+    try {
+      localStorage.setItem(FONT_SCALE_KEY, String(fontScale));
+    } catch {}
+  }, [fontScale]);
 
   useEffect(() => {
     try {
@@ -191,8 +233,16 @@ export default function App() {
     });
     setView({ kind: "chat" });
     try {
-      const replay = await replaySession(sel.session.file_path);
-      chats.loadReplay(convId, replay);
+      const isLargeSession = sel.session.message_count > PAGINATION_THRESHOLD;
+      if (isLargeSession) {
+        const page = await replaySessionPaged(sel.session.file_path, {
+          limit: 600,
+        });
+        chats.loadInitialPage(convId, sel.session.file_path, page);
+      } else {
+        const replay = await replaySession(sel.session.file_path);
+        chats.loadReplay(convId, replay);
+      }
     } catch (e) {
       console.error("replay failed", e);
     }
@@ -300,6 +350,16 @@ export default function App() {
 
   const tab = chats.active;
   const busy = !!tab && (tab.status === "thinking" || tab.status === "streaming");
+  const replayLoadState = tab?.replayState
+    ? {
+        hasMoreBefore: tab.replayState.hasMoreBefore,
+        loadingBefore: tab.replayState.loadingBefore,
+        remaining: Math.max(
+          0,
+          tab.replayState.totalMessageCount - tab.messages.length
+        ),
+      }
+    : undefined;
 
   return (
     <div className="cd-root">
@@ -326,29 +386,32 @@ export default function App() {
             status={tab.status}
             error={tab.error}
             stderr={tab.stderr}
+            exitCode={tab.lastExitCode}
             highlightId={highlightId}
             onHighlightConsumed={() => setHighlightId(null)}
+            onRetry={() => chats.retryLast(tab.convId)}
+            canRetry={chats.hasUserMessage(tab.convId)}
+            onLoadEarlier={() => chats.loadEarlier(tab.convId)}
+            replayLoadState={replayLoadState}
           />
           <Composer
             busy={busy}
             placeholder={tab.sessionId ? "继续对话…" : "向 Claude 提问…"}
             settings={composerSettings}
             onSettingsChange={setComposerSettings}
+            extraDirs={tab.extraDirs ?? []}
+            onExtraDirsChange={(next) => chats.setExtraDirs(tab.convId, next)}
             usage={tab.usage}
             slashCommands={tab.slashCommands}
             cwd={tab.cwd}
             onSend={(text, attachments: Attachment[]) => {
               if (!claudeBin) return;
               const fullPrompt = buildPromptWithAttachments(text, attachments);
-              const trimmedAppend = composerSettings.appendSystemPrompt.trim();
               chats.send(tab.convId, fullPrompt, claudeBin, {
-                permissionMode: composerSettings.permissionMode,
-                model: modelArg(composerSettings),
-                effort:
-                  composerSettings.effort === "off"
-                    ? null
-                    : composerSettings.effort,
-                appendSystemPrompt: trimmedAppend || null,
+                permissionMode: currentSendContext.permissionMode,
+                model: currentSendContext.model,
+                effort: currentSendContext.effort,
+                appendSystemPrompt: currentSendContext.appendSystemPrompt,
               });
             }}
             onCancel={() => chats.cancel(tab.convId)}
@@ -379,7 +442,12 @@ export default function App() {
 
       {view.kind === "config" && (
         <main className="cd-main">
-          <ConfigView />
+          <ConfigView
+            fontScale={fontScale}
+            onFontScaleChange={(value) => setFontScale(clampFontScale(value))}
+            fontScaleMin={FONT_SCALE_MIN}
+            fontScaleMax={FONT_SCALE_MAX}
+          />
         </main>
       )}
 

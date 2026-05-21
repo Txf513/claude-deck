@@ -6,12 +6,15 @@ import {
   onClaudeEvent,
   onClaudeStderr,
   parseStreamLine,
+  replaySessionPaged,
+  type ReplayEntry,
+  type ReplayPage,
   type ReplayResult,
   type Effort,
   type PermissionMode,
 } from "../lib/claude";
 import type { ChatMessage, ConvStatus, UsageStats } from "../lib/chatTypes";
-import { normalizeReplay } from "../lib/replay";
+import { entriesToMessages, mergePagedReplay, normalizeReplay } from "../lib/replay";
 
 export type ChatTab = {
   convId: string;
@@ -25,21 +28,56 @@ export type ChatTab = {
   stderr: string[];
   unread: boolean;
   usage: UsageStats;
+  extraDirs: string[];
   slashCommands: string[];
+  lastExitCode?: number;
+  replayState?: {
+    filePath: string;
+    loadedEntries: ReplayEntry[];
+    earliestUuid: string | null;
+    totalMessageCount: number;
+    hasMoreBefore: boolean;
+    loadingBefore: boolean;
+  };
   // private bookkeeping
   requestId: string | null;
   assistantId: string | null;
   startedAt: number;
   toolByIndex: Record<number, string>;
+  lastSendConfig: SendConfig | null;
 };
 
 type Notify = (title: string, body?: string) => void;
+type SendConfigInput = {
+  claudeBin: string | null;
+  permissionMode?: PermissionMode;
+  model?: string | null;
+  systemPrompt?: string | null;
+  appendSystemPrompt?: string | null;
+  effort?: Effort | null;
+};
+type SendConfig = {
+  claudeBin: string | null;
+  permissionMode: PermissionMode;
+  model: string | null;
+  systemPrompt: string | null;
+  appendSystemPrompt: string | null;
+  effort: Effort | null;
+};
 
 function tryNotify(title: string, body?: string) {
-  if (typeof Notification === "undefined") return;
-  if (Notification.permission === "granted") {
-    new Notification(title, { body });
-  }
+  void (async () => {
+    try {
+      const { isPermissionGranted, sendNotification } = await import(
+        "@tauri-apps/plugin-notification"
+      );
+      if (await isPermissionGranted()) {
+        sendNotification({ title, body });
+      }
+    } catch {
+      // Plugin unavailable (e.g. running in pure web preview) — silently ignore.
+    }
+  })();
 }
 
 const SLASH_CACHE_KEY = "cd:slash_commands";
@@ -62,18 +100,40 @@ function writeCachedSlash(list: string[]) {
   } catch {}
 }
 
-export function useChats(notify: Notify = tryNotify) {
+function normalizeSendConfig(input: SendConfigInput): SendConfig {
+  return {
+    claudeBin: input.claudeBin,
+    permissionMode: input.permissionMode ?? "default",
+    model: input.model ?? null,
+    systemPrompt: input.systemPrompt ?? null,
+    appendSystemPrompt: input.appendSystemPrompt ?? null,
+    effort: input.effort ?? null,
+  };
+}
+
+export function useChats(
+  notify: Notify = tryNotify,
+  fallbackSendContext?: SendConfigInput | null
+) {
   const [tabs, setTabs] = useState<Record<string, ChatTab>>({});
   const [activeId, setActiveId] = useState<string | null>(null);
 
   const tabsRef = useRef(tabs);
   const activeIdRef = useRef(activeId);
+  const fallbackSendContextRef = useRef<SendConfig | null>(
+    fallbackSendContext ? normalizeSendConfig(fallbackSendContext) : null
+  );
   useEffect(() => {
     tabsRef.current = tabs;
   }, [tabs]);
   useEffect(() => {
     activeIdRef.current = activeId;
   }, [activeId]);
+  useEffect(() => {
+    fallbackSendContextRef.current = fallbackSendContext
+      ? normalizeSendConfig(fallbackSendContext)
+      : null;
+  }, [fallbackSendContext]);
 
   // Resolve convId from a streaming request_id by scanning ref.
   function findConvByRequestId(reqId: string): string | null {
@@ -108,6 +168,10 @@ export function useChats(notify: Notify = tryNotify) {
     onClaudeDone((p) => {
       const convId = findConvByRequestId(p.request_id);
       if (!convId) return;
+      patch(convId, (t) => ({
+        ...t,
+        lastExitCode: p.code ?? undefined,
+      }));
       finalize(convId, p.error ?? null, p.code);
     }).then((u) => (unlistenDone = u));
 
@@ -118,15 +182,20 @@ export function useChats(notify: Notify = tryNotify) {
     };
   }, []);
 
-  // Request browser notification permission once
+  // Request OS notification permission once via the Tauri plugin.
   useEffect(() => {
-    if (typeof Notification === "undefined") return;
-    if (
-      Notification.permission !== "granted" &&
-      Notification.permission !== "denied"
-    ) {
-      Notification.requestPermission().catch(() => {});
-    }
+    void (async () => {
+      try {
+        const { isPermissionGranted, requestPermission } = await import(
+          "@tauri-apps/plugin-notification"
+        );
+        if (!(await isPermissionGranted())) {
+          await requestPermission();
+        }
+      } catch {
+        // Plugin unavailable; nothing to do.
+      }
+    })();
   }, []);
 
   function patch(convId: string, mutate: (t: ChatTab) => ChatTab) {
@@ -355,6 +424,7 @@ export function useChats(notify: Notify = tryNotify) {
       ...t,
       status: displayErr ? "error" : "idle",
       error: displayErr,
+      lastExitCode: code ?? undefined,
       requestId: null,
       toolByIndex: {},
       unread: t.convId === activeIdRef.current ? false : true,
@@ -411,11 +481,15 @@ export function useChats(notify: Notify = tryNotify) {
         totalCacheCreationTokens: 0,
         turnCount: 0,
       },
+      extraDirs: [],
       slashCommands: readCachedSlash(),
+      lastExitCode: undefined,
+      replayState: undefined,
       requestId: null,
       assistantId: null,
       startedAt: 0,
       toolByIndex: {},
+      lastSendConfig: null,
     };
     setTabs((prev) => ({ ...prev, [args.convId]: fresh }));
     setActive(args.convId);
@@ -434,6 +508,18 @@ export function useChats(notify: Notify = tryNotify) {
       status: "idle",
       error: null,
       stderr: normalized.stderr,
+      lastExitCode: undefined,
+      lastSendConfig: null,
+      replayState: t.filePath
+        ? {
+            filePath: t.filePath,
+            loadedEntries: replay.entries,
+            earliestUuid: replay.messages[0]?.id ?? null,
+            totalMessageCount: replay.messages.length,
+            hasMoreBefore: false,
+            loadingBefore: false,
+          }
+        : undefined,
       usage: {
         inputTokens: replay.last_input_tokens ?? 0,
         outputTokens: replay.last_output_tokens ?? 0,
@@ -450,6 +536,155 @@ export function useChats(notify: Notify = tryNotify) {
     }));
   }
 
+  function loadInitialPage(
+    convId: string,
+    filePath: string,
+    page: ReplayPage
+  ) {
+    patch(convId, (t) => ({
+      ...t,
+      filePath,
+      sessionId: page.session_id,
+      messages: entriesToMessages(page.entries),
+      status: "idle",
+      error: null,
+      stderr: [],
+      lastExitCode: undefined,
+      lastSendConfig: null,
+      replayState: {
+        filePath,
+        loadedEntries: page.entries,
+        earliestUuid: page.earliest_uuid,
+        totalMessageCount: page.total_message_count,
+        hasMoreBefore: page.has_more_before,
+        loadingBefore: false,
+      },
+      usage: {
+        inputTokens: page.last_input_tokens ?? 0,
+        outputTokens: page.last_output_tokens ?? 0,
+        cacheReadTokens: page.last_cache_read_tokens ?? 0,
+        cacheCreationTokens: page.last_cache_creation_tokens ?? 0,
+        contextWindow: page.context_window ?? 0,
+        costUsd: t.usage.costUsd,
+        totalInputTokens: page.total_input_tokens ?? 0,
+        totalOutputTokens: page.total_output_tokens ?? 0,
+        totalCacheReadTokens: page.total_cache_read_tokens ?? 0,
+        totalCacheCreationTokens: page.total_cache_creation_tokens ?? 0,
+        turnCount: page.turn_count ?? 0,
+      },
+    }));
+  }
+
+  async function loadEarlier(convId: string): Promise<void> {
+    const tab = tabsRef.current[convId];
+    const replayState = tab?.replayState;
+    if (
+      !replayState ||
+      !replayState.hasMoreBefore ||
+      replayState.loadingBefore ||
+      !replayState.earliestUuid
+    ) {
+      return;
+    }
+
+    patch(convId, (t) => ({
+      ...t,
+      replayState: t.replayState
+        ? { ...t.replayState, loadingBefore: true }
+        : t.replayState,
+    }));
+
+    try {
+      const page = await replaySessionPaged(replayState.filePath, {
+        beforeUuid: replayState.earliestUuid,
+        limit: 600,
+      });
+      const current = tabsRef.current[convId]?.replayState;
+      if (!current) return;
+      const newEntries = page.entries.concat(current.loadedEntries);
+      patch(convId, (t) => ({
+        ...t,
+        messages: mergePagedReplay(current.loadedEntries, page.entries),
+        replayState: {
+          filePath: current.filePath,
+          loadedEntries: newEntries,
+          earliestUuid: page.earliest_uuid,
+          totalMessageCount: page.total_message_count,
+          hasMoreBefore: page.has_more_before,
+          loadingBefore: false,
+        },
+      }));
+    } catch (error) {
+      console.error("loadEarlier failed", error);
+      patch(convId, (t) => ({
+        ...t,
+        replayState: t.replayState
+          ? { ...t.replayState, loadingBefore: false }
+          : t.replayState,
+      }));
+    }
+  }
+
+  async function spawnRequest(
+    convId: string,
+    prompt: string,
+    sendConfig: SendConfig,
+    appendUserMessage: boolean
+  ) {
+    const tab = tabsRef.current[convId];
+    if (!tab) return;
+    if (tab.status === "thinking" || tab.status === "streaming") return;
+
+    const startedAt = Date.now();
+    const reqId = `req-${convId}-${startedAt}-${Math.random()
+      .toString(36)
+      .slice(2, 6)}`;
+    const userId = `user-${startedAt}`;
+
+    patch(convId, (t) => ({
+      ...t,
+      requestId: sendConfig.claudeBin ? reqId : null,
+      assistantId: null,
+      startedAt,
+      toolByIndex: {},
+      status: sendConfig.claudeBin ? "thinking" : "error",
+      error: sendConfig.claudeBin ? null : "claude: not found",
+      stderr: [],
+      lastExitCode: sendConfig.claudeBin ? undefined : 127,
+      lastSendConfig: sendConfig,
+      messages: appendUserMessage
+        ? [...t.messages, { kind: "text", id: userId, role: "user", text: prompt }]
+        : t.messages,
+    }));
+
+    if (!sendConfig.claudeBin) return;
+
+    try {
+      const latestTab = tabsRef.current[convId];
+      await claudeSend({
+        request_id: reqId,
+        prompt,
+        cwd: latestTab?.cwd ?? tab.cwd,
+        resume_session_id: latestTab?.sessionId ?? tab.sessionId,
+        claude_bin: sendConfig.claudeBin,
+        skip_permissions: sendConfig.permissionMode === "bypassPermissions",
+        permission_mode: sendConfig.permissionMode,
+        model: sendConfig.model,
+        system_prompt: sendConfig.systemPrompt,
+        append_system_prompt: sendConfig.appendSystemPrompt,
+        effort: sendConfig.effort,
+        extra_dirs: latestTab?.extraDirs ?? tab.extraDirs,
+      });
+    } catch (e) {
+      patch(convId, (t) => ({
+        ...t,
+        status: "error",
+        error: String(e),
+        requestId: null,
+      }));
+    }
+  }
+
   const send = useCallback(
     async (
       convId: string,
@@ -463,51 +698,44 @@ export function useChats(notify: Notify = tryNotify) {
         effort?: Effort | null;
       }
     ) => {
-      const tab = tabsRef.current[convId];
-      if (!tab) return;
-      if (tab.status === "thinking" || tab.status === "streaming") return;
-      const reqId = `req-${convId}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-      const userId = `user-${Date.now()}`;
-      patch(convId, (t) => ({
-        ...t,
-        requestId: reqId,
-        assistantId: null,
-        startedAt: Date.now(),
-        toolByIndex: {},
-        status: "thinking",
-        error: null,
-        stderr: [],
-        messages: [
-          ...t.messages,
-          { kind: "text", id: userId, role: "user", text: prompt },
-        ],
-      }));
-      try {
-        const mode = opts?.permissionMode ?? "default";
-        await claudeSend({
-          request_id: reqId,
-          prompt,
-          cwd: tab.cwd,
-          resume_session_id: tab.sessionId,
-          claude_bin: claudeBin,
-          skip_permissions: mode === "bypassPermissions",
-          permission_mode: mode,
-          model: opts?.model ?? null,
-          system_prompt: opts?.systemPrompt ?? null,
-          append_system_prompt: opts?.appendSystemPrompt ?? null,
-          effort: opts?.effort ?? null,
-        });
-      } catch (e) {
-        patch(convId, (t) => ({
-          ...t,
-          status: "error",
-          error: String(e),
-          requestId: null,
-        }));
-      }
+      await spawnRequest(
+        convId,
+        prompt,
+        normalizeSendConfig({
+          claudeBin,
+          permissionMode: opts?.permissionMode,
+          model: opts?.model,
+          systemPrompt: opts?.systemPrompt,
+          appendSystemPrompt: opts?.appendSystemPrompt,
+          effort: opts?.effort,
+        }),
+        true
+      );
     },
     []
   );
+
+  const retryLast = useCallback(async (convId: string) => {
+    const tab = tabsRef.current[convId];
+    if (!tab) return;
+    const lastUser = [...tab.messages]
+      .reverse()
+      .find((message): message is ChatMessage & { kind: "text"; role: "user" } =>
+        message.kind === "text" && message.role === "user"
+      );
+    if (!lastUser) return;
+    const sendConfig = tab.lastSendConfig ?? fallbackSendContextRef.current;
+    if (!sendConfig) return;
+    await spawnRequest(convId, lastUser.text, sendConfig, false);
+  }, []);
+
+  const hasUserMessage = useCallback((convId: string) => {
+    const tab = tabsRef.current[convId];
+    if (!tab) return false;
+    return tab.messages.some(
+      (message) => message.kind === "text" && message.role === "user"
+    );
+  }, []);
 
   const cancel = useCallback(async (convId: string) => {
     const tab = tabsRef.current[convId];
@@ -534,6 +762,10 @@ export function useChats(notify: Notify = tryNotify) {
   const tabsList = Object.values(tabs);
   const active = activeId ? tabs[activeId] ?? null : null;
 
+  function setExtraDirs(convId: string, next: string[]) {
+    patch(convId, (t) => ({ ...t, extraDirs: next }));
+  }
+
   return {
     tabs,
     tabsList,
@@ -542,8 +774,13 @@ export function useChats(notify: Notify = tryNotify) {
     setActive,
     openOrCreate,
     loadReplay,
+    loadInitialPage,
+    loadEarlier,
     send,
+    retryLast,
+    hasUserMessage,
     cancel,
     closeTab,
+    setExtraDirs,
   };
 }

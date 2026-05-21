@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use specta::Type;
 
 fn home() -> Result<PathBuf, String> {
     std::env::var("HOME")
@@ -25,7 +26,7 @@ fn config_path(kind: &str) -> Result<PathBuf, String> {
     })
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Type)]
 pub struct ConfigFile {
     pub kind: String,
     pub path: String,
@@ -36,6 +37,7 @@ pub struct ConfigFile {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn read_config(kind: String) -> Result<ConfigFile, String> {
     let path = config_path(&kind)?;
     if !path.exists() {
@@ -107,13 +109,14 @@ fn atomic_write(target: &Path, content: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Type)]
 pub struct WriteResult {
     pub path: String,
     pub backup: Option<String>,
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn write_config(kind: String, content: String) -> Result<WriteResult, String> {
     let parsed: Value =
         serde_json::from_str(&content).map_err(|e| format!("invalid JSON: {}", e))?;
@@ -132,7 +135,7 @@ pub fn write_config(kind: String, content: String) -> Result<WriteResult, String
     })
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Type)]
 pub struct SkillInfo {
     pub name: String,
     pub description: String,
@@ -140,27 +143,126 @@ pub struct SkillInfo {
     pub path: String,
 }
 
-fn parse_skill_frontmatter(text: &str) -> (Option<String>, Option<String>) {
+#[derive(Serialize, Type)]
+pub struct AgentInfo {
+    pub name: String,
+    pub description: String,
+    pub path: String,
+    pub source: String,
+    pub model: Option<String>,
+    pub tools: Vec<String>,
+}
+
+#[derive(Serialize, Type)]
+pub struct CommandInfo {
+    pub name: String,
+    pub description: String,
+    pub path: String,
+    pub source: String,
+}
+
+fn frontmatter_block(text: &str) -> Option<&str> {
     if !text.starts_with("---") {
-        return (None, None);
+        return None;
     }
     let rest = &text[3..];
-    let end = match rest.find("\n---") {
-        Some(e) => e,
-        None => return (None, None),
+    let end = rest.find("\n---")?;
+    Some(&rest[..end])
+}
+
+fn trim_frontmatter_scalar(value: &str) -> String {
+    value
+        .trim()
+        .trim_end_matches(',')
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim()
+        .to_string()
+}
+
+fn parse_skill_frontmatter(text: &str) -> (Option<String>, Option<String>) {
+    let Some(block) = frontmatter_block(text) else {
+        return (None, None);
     };
-    let block = &rest[..end];
     let mut name: Option<String> = None;
     let mut description: Option<String> = None;
     for line in block.lines() {
         let trimmed = line.trim_start();
         if let Some(rest) = trimmed.strip_prefix("name:") {
-            name = Some(rest.trim().trim_matches('"').to_string());
+            name = Some(trim_frontmatter_scalar(rest));
         } else if let Some(rest) = trimmed.strip_prefix("description:") {
-            description = Some(rest.trim().trim_matches('"').to_string());
+            description = Some(trim_frontmatter_scalar(rest));
         }
     }
     (name, description)
+}
+
+fn parse_agent_frontmatter(text: &str) -> (Option<String>, Option<String>, Option<String>, Vec<String>) {
+    let (name, description) = parse_skill_frontmatter(text);
+    let Some(block) = frontmatter_block(text) else {
+        return (name, description, None, Vec::new());
+    };
+
+    let mut model: Option<String> = None;
+    let mut tools: Vec<String> = Vec::new();
+    let lines: Vec<&str> = block.lines().collect();
+    let mut i = 0usize;
+
+    while i < lines.len() {
+        let line = lines[i];
+        let trimmed = line.trim_start();
+
+        if let Some(rest) = trimmed.strip_prefix("model:") {
+            let value = trim_frontmatter_scalar(rest);
+            if !value.is_empty() {
+                model = Some(value);
+            }
+        } else if let Some(rest) = trimmed.strip_prefix("tools:") {
+            let value = rest.trim();
+            if value.starts_with('[') && value.ends_with(']') {
+                let inner = &value[1..value.len().saturating_sub(1)];
+                tools.extend(
+                    inner
+                        .split(',')
+                        .map(trim_frontmatter_scalar)
+                        .filter(|item| !item.is_empty()),
+                );
+            } else if value.is_empty() {
+                let base_indent = line.chars().take_while(|c| c.is_ascii_whitespace()).count();
+                let mut collected: Vec<String> = Vec::new();
+                let mut j = i + 1;
+                while j < lines.len() {
+                    let next = lines[j];
+                    if next.trim().is_empty() {
+                        j += 1;
+                        continue;
+                    }
+                    let indent = next.chars().take_while(|c| c.is_ascii_whitespace()).count();
+                    if indent <= base_indent {
+                        break;
+                    }
+                    let next_trimmed = next.trim_start();
+                    if let Some(item) = next_trimmed.strip_prefix("- ") {
+                        let parsed = trim_frontmatter_scalar(item);
+                        if !parsed.is_empty() {
+                            collected.push(parsed);
+                        }
+                    } else {
+                        break;
+                    }
+                    j += 1;
+                }
+                if !collected.is_empty() {
+                    tools = collected;
+                }
+                i = j.saturating_sub(1);
+            }
+        }
+
+        i += 1;
+    }
+
+    (name, description, model, tools)
 }
 
 fn collect_skills_from(dir: &Path, source: &str, out: &mut Vec<SkillInfo>) {
@@ -196,6 +298,7 @@ fn collect_skills_from(dir: &Path, source: &str, out: &mut Vec<SkillInfo>) {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn list_skills() -> Result<Vec<SkillInfo>, String> {
     let mut out: Vec<SkillInfo> = Vec::new();
     let user = claude_dir()?.join("skills");
@@ -232,7 +335,90 @@ pub fn list_skills() -> Result<Vec<SkillInfo>, String> {
     Ok(out)
 }
 
-#[derive(Serialize, Deserialize)]
+fn collect_markdown_files<T>(
+    dir: &Path,
+    mut map: impl FnMut(&Path, &str) -> T,
+) -> Result<Vec<T>, String> {
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let entries = fs::read_dir(dir).map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        if path.extension().and_then(|ext| ext.to_str()) != Some("md") {
+            continue;
+        }
+        let content = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        out.push(map(&path, &content));
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn list_agents() -> Result<Vec<AgentInfo>, String> {
+    let dir = claude_dir()?.join("agents");
+    let mut out = collect_markdown_files(&dir, |path, content| {
+        let (name_fm, desc_fm, model, tools) = parse_agent_frontmatter(content);
+        let name = name_fm.unwrap_or_else(|| {
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("")
+                .to_string()
+        });
+        AgentInfo {
+            name,
+            description: desc_fm.unwrap_or_default(),
+            path: path.to_string_lossy().to_string(),
+            source: "user".to_string(),
+            model,
+            tools,
+        }
+    })?;
+    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(out)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn list_commands() -> Result<Vec<CommandInfo>, String> {
+    let dir = claude_dir()?.join("commands");
+    let mut out = collect_markdown_files(&dir, |path, content| {
+        let (name_fm, desc_fm) = parse_skill_frontmatter(content);
+        let name = name_fm.unwrap_or_else(|| {
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("")
+                .to_string()
+        });
+        CommandInfo {
+            name,
+            description: desc_fm.unwrap_or_default(),
+            path: path.to_string_lossy().to_string(),
+            source: "user".to_string(),
+        }
+    })?;
+    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    Ok(out)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub fn read_markdown_file(path: String) -> Result<String, String> {
+    let canonical_claude_dir = fs::canonicalize(claude_dir()?).map_err(|e| e.to_string())?;
+    let canonical_path = fs::canonicalize(&path).map_err(|e| e.to_string())?;
+    if !canonical_path.starts_with(&canonical_claude_dir) {
+        return Err("path outside ~/.claude is not allowed".to_string());
+    }
+    fs::read_to_string(&canonical_path).map_err(|e| e.to_string())
+}
+
+#[derive(Serialize, Deserialize, Type)]
 pub struct PluginInfo {
     pub id: String,
     pub enabled: bool,
@@ -298,6 +484,7 @@ fn write_settings_value(value: &Value) -> Result<(), String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn list_plugins() -> Result<Vec<PluginInfo>, String> {
     let settings = read_merged_settings().unwrap_or(Value::Object(Map::new()));
     let enabled_map = settings
@@ -361,6 +548,7 @@ pub fn list_plugins() -> Result<Vec<PluginInfo>, String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn set_plugin_enabled(id: String, enabled: bool) -> Result<(), String> {
     let mut settings = read_settings_value()?;
     let obj = settings
@@ -377,6 +565,7 @@ pub fn set_plugin_enabled(id: String, enabled: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn save_paste_image(bytes: Vec<u8>, ext: String) -> Result<String, String> {
     let dir = claude_dir()?.join("paste-cache");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -399,6 +588,7 @@ pub fn save_paste_image(bytes: Vec<u8>, ext: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn read_image_data_url(path: String) -> Result<String, String> {
     use base64::Engine;
     let p = std::path::Path::new(&path);
@@ -429,7 +619,7 @@ pub fn read_image_data_url(path: String) -> Result<String, String> {
     Ok(format!("data:{};base64,{}", mime, b64))
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Type)]
 pub struct ModelOption {
     pub id: String,
     pub family: String,
@@ -494,6 +684,7 @@ fn extract_version(model_id: &str) -> Option<String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn list_models() -> Result<Vec<ModelOption>, String> {
     let mut out: Vec<ModelOption> = Vec::new();
     let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -569,6 +760,7 @@ pub fn list_models() -> Result<Vec<ModelOption>, String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn write_text_file(file_path: String, content: String) -> Result<(), String> {
     let path = std::path::PathBuf::from(&file_path);
     if let Some(parent) = path.parent() {

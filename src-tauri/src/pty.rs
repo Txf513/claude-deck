@@ -6,7 +6,9 @@ use base64::Engine;
 use parking_lot::Mutex;
 use portable_pty::{CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use specta::Type;
+use tauri::{AppHandle, State};
+use tauri_specta::Event;
 use uuid::Uuid;
 
 use crate::path_util::augmented_path;
@@ -22,19 +24,20 @@ pub struct PtyState {
     sessions: Mutex<HashMap<String, Session>>,
 }
 
-#[derive(Clone, Serialize)]
-struct PtyDataPayload {
-    id: String,
-    data: String,
+#[derive(Clone, Serialize, Type, Event)]
+pub struct PtyDataEvent {
+    pub id: String,
+    pub data: String,
 }
 
-#[derive(Clone, Serialize)]
-struct PtyExitPayload {
-    id: String,
-    code: Option<i32>,
+#[derive(Clone, Serialize, Type, Event)]
+pub struct PtyExitEvent {
+    pub id: String,
+    pub code: Option<i32>,
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn pty_spawn(
     app: AppHandle,
     state: State<'_, PtyState>,
@@ -104,30 +107,27 @@ pub fn pty_spawn(
                 Ok(0) => break,
                 Ok(n) => {
                     let encoded = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
-                    let _ = app_handle.emit(
-                        "pty:data",
-                        PtyDataPayload {
-                            id: id_for_thread.clone(),
-                            data: encoded,
-                        },
-                    );
+                    let _ = PtyDataEvent {
+                        id: id_for_thread.clone(),
+                        data: encoded,
+                    }
+                    .emit(&app_handle);
                 }
                 Err(_) => break,
             }
         }
-        let _ = app_handle.emit(
-            "pty:exit",
-            PtyExitPayload {
-                id: id_for_thread.clone(),
-                code: None,
-            },
-        );
+        let _ = PtyExitEvent {
+            id: id_for_thread.clone(),
+            code: None,
+        }
+        .emit(&app_handle);
     });
 
     Ok(id)
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn pty_write(state: State<'_, PtyState>, id: String, data: String) -> Result<(), String> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(data.as_bytes())
@@ -143,6 +143,7 @@ pub fn pty_write(state: State<'_, PtyState>, id: String, data: String) -> Result
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn pty_resize(
     state: State<'_, PtyState>,
     id: String,
@@ -164,6 +165,7 @@ pub fn pty_resize(
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn pty_kill(state: State<'_, PtyState>, id: String) -> Result<(), String> {
     let mut sessions = state.sessions.lock();
     if let Some(mut session) = sessions.remove(&id) {
@@ -173,11 +175,13 @@ pub fn pty_kill(state: State<'_, PtyState>, id: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn pty_list(state: State<'_, PtyState>) -> Vec<String> {
     state.sessions.lock().keys().cloned().collect()
 }
 
 #[tauri::command]
+#[specta::specta]
 pub fn resolve_claude_bin() -> Option<String> {
     crate::path_util::resolve_claude_bin(None).map(|p| p.to_string_lossy().to_string())
 }

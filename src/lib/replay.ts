@@ -1,4 +1,4 @@
-import type { ReplayResult } from "./claude";
+import type { ReplayEntry, ReplayResult } from "./claude";
 import type { ChatMessage, ToolCall } from "./chatTypes";
 
 export type NormalizedReplay = {
@@ -50,11 +50,11 @@ function createToolMessage(args: {
   };
 }
 
-export function normalizeReplay(result: ReplayResult): NormalizedReplay {
+export function entriesToMessages(entries: ReplayEntry[]): ChatMessage[] {
   const messages: ChatMessage[] = [];
   const toolIndex = new Map<string, number>();
 
-  for (const entry of result.entries) {
+  for (const entry of entries) {
     if (entry.is_meta) continue;
 
     if (entry.kind === "text") {
@@ -122,5 +122,16 @@ export function normalizeReplay(result: ReplayResult): NormalizedReplay {
     }
   }
 
-  return { messages, stderr: [] };
+  return messages;
+}
+
+export function mergePagedReplay(
+  prevEntries: ReplayEntry[],
+  newPageEntries: ReplayEntry[]
+): ChatMessage[] {
+  return entriesToMessages([...newPageEntries, ...prevEntries]);
+}
+
+export function normalizeReplay(result: ReplayResult): NormalizedReplay {
+  return { messages: entriesToMessages(result.entries), stderr: [] };
 }

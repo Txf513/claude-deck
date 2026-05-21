@@ -1,5 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { commands, events } from "./bindings";
+import type { UnlistenFn } from "@tauri-apps/api/event";
 
 export type PtyDataPayload = { id: string; data: string };
 export type PtyExitPayload = { id: string; code: number | null };
@@ -19,6 +19,13 @@ function b64decode(b64: string): Uint8Array {
   return out;
 }
 
+function unwrap<T>(
+  r: { status: "ok"; data: T } | { status: "error"; error: string }
+): T {
+  if (r.status === "error") throw new Error(r.error);
+  return r.data;
+}
+
 export async function spawnPty(opts: {
   command: string;
   args?: string[];
@@ -26,35 +33,37 @@ export async function spawnPty(opts: {
   cols: number;
   rows: number;
 }): Promise<string> {
-  return await invoke<string>("pty_spawn", {
-    command: opts.command,
-    args: opts.args ?? [],
-    cwd: opts.cwd ?? null,
-    cols: opts.cols,
-    rows: opts.rows,
-  });
+  return unwrap(
+    await commands.ptySpawn(
+      opts.command,
+      opts.args ?? [],
+      opts.cwd ?? null,
+      opts.cols,
+      opts.rows
+    )
+  );
 }
 
 export async function writePtyBytes(id: string, bytes: Uint8Array): Promise<void> {
-  await invoke("pty_write", { id, data: b64encode(bytes) });
+  unwrap(await commands.ptyWrite(id, b64encode(bytes)));
 }
 
 export async function resizePty(id: string, cols: number, rows: number): Promise<void> {
-  await invoke("pty_resize", { id, cols, rows });
+  unwrap(await commands.ptyResize(id, cols, rows));
 }
 
 export async function killPty(id: string): Promise<void> {
-  await invoke("pty_kill", { id });
+  unwrap(await commands.ptyKill(id));
 }
 
 export async function resolveClaudeBin(): Promise<string | null> {
-  return (await invoke<string | null>("resolve_claude_bin")) ?? null;
+  return (await commands.resolveClaudeBin()) ?? null;
 }
 
 /** Returns the user's HOME directory, or empty string if unavailable. */
 export async function getHomeDir(): Promise<string> {
   try {
-    return await invoke<string>("get_home_dir");
+    return await commands.getHomeDir();
   } catch {
     return "";
   }
@@ -64,20 +73,17 @@ export async function savePasteImage(
   bytes: Uint8Array,
   ext: string
 ): Promise<string> {
-  return await invoke<string>("save_paste_image", {
-    bytes: Array.from(bytes),
-    ext,
-  });
+  return unwrap(await commands.savePasteImage(Array.from(bytes), ext));
 }
 
 export async function readImageDataUrl(path: string): Promise<string> {
-  return await invoke<string>("read_image_data_url", { path });
+  return unwrap(await commands.readImageDataUrl(path));
 }
 
 export async function onPtyData(
   cb: (id: string, bytes: Uint8Array, text: string) => void
 ): Promise<UnlistenFn> {
-  return await listen<PtyDataPayload>("pty:data", (event) => {
+  return await events.ptyDataEvent.listen((event) => {
     const bytes = b64decode(event.payload.data);
     cb(event.payload.id, bytes, dec.decode(bytes));
   });
@@ -86,7 +92,7 @@ export async function onPtyData(
 export async function onPtyExit(
   cb: (id: string, code: number | null) => void
 ): Promise<UnlistenFn> {
-  return await listen<PtyExitPayload>("pty:exit", (event) => {
+  return await events.ptyExitEvent.listen((event) => {
     cb(event.payload.id, event.payload.code);
   });
 }

@@ -54,6 +54,7 @@ pub fn resolve_claude_bin(explicit: Option<String>) -> Option<PathBuf> {
 /// is unset. Exposed as a Tauri command so the frontend can derive paths
 /// instead of hard-coding a developer's home directory.
 #[tauri::command]
+#[specta::specta]
 pub fn get_home_dir() -> String {
     std::env::var("HOME").unwrap_or_default()
 }
