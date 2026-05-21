@@ -25,7 +25,7 @@ pub fn augmented_path() -> String {
     }
     let mut parts: Vec<&str> = existing.split(':').filter(|s| !s.is_empty()).collect();
     for extra in &extras {
-        if !parts.iter().any(|p| *p == extra.as_str()) {
+        if !parts.contains(&extra.as_str()) {
             parts.push(extra.as_str());
         }
     }

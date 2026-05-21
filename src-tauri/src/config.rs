@@ -197,7 +197,9 @@ fn parse_skill_frontmatter(text: &str) -> (Option<String>, Option<String>) {
     (name, description)
 }
 
-fn parse_agent_frontmatter(text: &str) -> (Option<String>, Option<String>, Option<String>, Vec<String>) {
+fn parse_agent_frontmatter(
+    text: &str,
+) -> (Option<String>, Option<String>, Option<String>, Vec<String>) {
     let (name, description) = parse_skill_frontmatter(text);
     let Some(block) = frontmatter_block(text) else {
         return (name, description, None, Vec::new());
@@ -331,7 +333,7 @@ pub fn list_skills() -> Result<Vec<SkillInfo>, String> {
             }
         }
     }
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by_key(|item| item.name.to_lowercase());
     Ok(out)
 }
 
@@ -380,7 +382,7 @@ pub fn list_agents() -> Result<Vec<AgentInfo>, String> {
             tools,
         }
     })?;
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by_key(|item| item.name.to_lowercase());
     Ok(out)
 }
 
@@ -403,7 +405,7 @@ pub fn list_commands() -> Result<Vec<CommandInfo>, String> {
             source: "user".to_string(),
         }
     })?;
-    out.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    out.sort_by_key(|item| item.name.to_lowercase());
     Ok(out)
 }
 

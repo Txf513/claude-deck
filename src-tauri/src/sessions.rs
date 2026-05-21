@@ -113,7 +113,7 @@ fn read_cwd_from_dir(dir: &Path) -> Option<String> {
             continue;
         };
         let reader = BufReader::new(file);
-        for line in reader.lines().flatten().take(50) {
+        for line in reader.lines().map_while(Result::ok).take(50) {
             if line.is_empty() {
                 continue;
             }
@@ -177,7 +177,11 @@ fn count_message_blocks(content: Option<&Value>) -> usize {
                     n += 1;
                 }
             }
-            if n == 0 { 1 } else { n }
+            if n == 0 {
+                1
+            } else {
+                n
+            }
         }
         _ => 1,
     }
@@ -209,7 +213,7 @@ fn scan_session_file(path: &Path) -> Option<SessionInfo> {
     let mut last_activity: Option<String> = None;
     let mut message_count = 0usize;
 
-    for line in reader.lines().flatten() {
+    for line in reader.lines().map_while(Result::ok) {
         if line.is_empty() {
             continue;
         }
@@ -235,16 +239,14 @@ fn scan_session_file(path: &Path) -> Option<SessionInfo> {
             message_count += count_message_blocks(content);
         }
 
-        if first_prompt.is_none() && ty == "user" {
-            if !is_meta {
-                if let Some(text) = v
-                    .get("message")
-                    .and_then(|m| m.get("content"))
-                    .and_then(extract_text)
-                {
-                    if !is_skippable_prompt(&text) {
-                        first_prompt = Some(truncate(text.trim(), 100));
-                    }
+        if first_prompt.is_none() && ty == "user" && !is_meta {
+            if let Some(text) = v
+                .get("message")
+                .and_then(|m| m.get("content"))
+                .and_then(extract_text)
+            {
+                if !is_skippable_prompt(&text) {
+                    first_prompt = Some(truncate(text.trim(), 100));
                 }
             }
         }
@@ -320,7 +322,7 @@ pub fn list_projects() -> Vec<ProjectInfo> {
         })
         .collect();
 
-    projects.sort_by(|a, b| b.last_activity_ms.cmp(&a.last_activity_ms));
+    projects.sort_by_key(|p| std::cmp::Reverse(p.last_activity_ms));
     projects
 }
 
@@ -342,7 +344,7 @@ pub fn list_sessions(folder: String, limit: Option<u32>) -> Vec<SessionInfo> {
         .filter(|s| s.message_count > 0)
         .collect();
 
-    sessions.sort_by(|a, b| b.mtime_ms.cmp(&a.mtime_ms));
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.mtime_ms));
     if let Some(n) = limit {
         sessions.truncate(n as usize);
     }
@@ -547,7 +549,7 @@ pub fn search_sessions(query: String, limit: Option<u32>) -> Vec<SearchHit> {
                 .to_string();
             let reader = BufReader::new(file);
 
-            for line in reader.lines().flatten() {
+            for line in reader.lines().map_while(Result::ok) {
                 if line.is_empty() || !line.to_lowercase().contains(&q) {
                     continue;
                 }
@@ -563,9 +565,8 @@ pub fn search_sessions(query: String, limit: Option<u32>) -> Vec<SearchHit> {
                 if is_meta {
                     continue;
                 }
-                let (text, tool_name, entry_kind) = extract_search_content(
-                    v.get("message").and_then(|m| m.get("content")),
-                );
+                let (text, tool_name, entry_kind) =
+                    extract_search_content(v.get("message").and_then(|m| m.get("content")));
                 if text.is_empty() {
                     continue;
                 }
@@ -596,14 +597,14 @@ pub fn search_sessions(query: String, limit: Option<u32>) -> Vec<SearchHit> {
                     tool_name,
                 });
                 if hits.len() >= cap {
-                    hits.sort_by(|a, b| b.mtime_ms.cmp(&a.mtime_ms));
+                    hits.sort_by_key(|h| std::cmp::Reverse(h.mtime_ms));
                     return hits;
                 }
             }
         }
     }
 
-    hits.sort_by(|a, b| b.mtime_ms.cmp(&a.mtime_ms));
+    hits.sort_by_key(|h| std::cmp::Reverse(h.mtime_ms));
     hits
 }
 
@@ -746,7 +747,7 @@ fn build_snippet(text: &str, q: &str) -> String {
     if end < chars.len() {
         out.push('…');
     }
-    out.replace('\n', " ").replace('\r', " ").trim().to_string()
+    out.replace(['\n', '\r'], " ").trim().to_string()
 }
 
 fn extract_search_content(content: Option<&Value>) -> (String, Option<String>, Option<String>) {
@@ -815,7 +816,11 @@ fn tool_result_text(content: Option<&Value>) -> Option<String> {
                     out.push_str(t);
                 }
             }
-            if out.is_empty() { None } else { Some(out) }
+            if out.is_empty() {
+                None
+            } else {
+                Some(out)
+            }
         }
         _ => None,
     }
@@ -918,8 +923,15 @@ fn replay_entries_from_content(
                                 .and_then(|x| x.as_str())
                                 .map(String::from),
                             tool_input_json: None,
-                            tool_output_text: if output.is_empty() { None } else { Some(output) },
-                            is_error: item.get("is_error").and_then(|x| x.as_bool()).unwrap_or(false),
+                            tool_output_text: if output.is_empty() {
+                                None
+                            } else {
+                                Some(output)
+                            },
+                            is_error: item
+                                .get("is_error")
+                                .and_then(|x| x.as_bool())
+                                .unwrap_or(false),
                             is_meta,
                         });
                         idx += 1;
@@ -938,8 +950,7 @@ fn replay_message_preview(
     content: Option<&Value>,
     is_meta: bool,
 ) -> (String, Option<String>) {
-    let (text, tool_name, _) =
-        replay_entries_from_content(role, "", None, content, is_meta);
+    let (text, tool_name, _) = replay_entries_from_content(role, "", None, content, is_meta);
     (text, tool_name)
 }
 
@@ -952,7 +963,10 @@ fn replay_materialize(snapshots: &[LineSnapshot]) -> (Vec<ReplayMessage>, Vec<Re
     let mut entries: Vec<ReplayEntry> = Vec::new();
 
     for snapshot in snapshots {
-        let content = snapshot.content.get("message").and_then(|m| m.get("content"));
+        let content = snapshot
+            .content
+            .get("message")
+            .and_then(|m| m.get("content"));
         let (text, tool_name, mut line_entries) = replay_entries_from_content(
             &snapshot.ty,
             &snapshot.uuid,
@@ -997,7 +1011,7 @@ fn replay_collect(file_path: &Path, filter: ReplayFilter) -> Result<ReplayCollec
     let mut last_cache_read: u64 = 0;
     let mut last_cache_create: u64 = 0;
 
-    for line in reader.lines().flatten() {
+    for line in reader.lines().map_while(Result::ok) {
         if line.is_empty() {
             continue;
         }
@@ -1310,10 +1324,7 @@ fn write_titles_object(map: &serde_json::Map<String, Value>) -> Result<(), Strin
 }
 
 fn unsafe_archive_entry(path: &Path) -> String {
-    format!(
-        "archive contains unsafe entry: {}",
-        path.to_string_lossy()
-    )
+    format!("archive contains unsafe entry: {}", path.to_string_lossy())
 }
 
 fn read_safe_archive(path: &Path) -> Result<Vec<SafeArchiveEntry>, String> {
@@ -1335,10 +1346,15 @@ fn read_safe_archive(path: &Path) -> Result<Vec<SafeArchiveEntry>, String> {
         if entry.header().entry_type() != EntryType::Regular || entry_path.is_absolute() {
             return Err(unsafe_archive_entry(&entry_path));
         }
-        if entry_path
-            .components()
-            .any(|component| matches!(component, Component::ParentDir | Component::RootDir | Component::Prefix(_) | Component::CurDir))
-        {
+        if entry_path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir
+                    | Component::RootDir
+                    | Component::Prefix(_)
+                    | Component::CurDir
+            )
+        }) {
             return Err(unsafe_archive_entry(&entry_path));
         }
 
@@ -1353,12 +1369,9 @@ fn read_safe_archive(path: &Path) -> Result<Vec<SafeArchiveEntry>, String> {
             {
                 SafeArchiveEntry::Titles { contents }
             }
-            [
-                Component::Normal(root),
-                Component::Normal(folder),
-                Component::Normal(file_name),
-            ] if root.to_string_lossy() == "projects"
-                && file_name.to_string_lossy().ends_with(".jsonl") =>
+            [Component::Normal(root), Component::Normal(folder), Component::Normal(file_name)]
+                if root.to_string_lossy() == "projects"
+                    && file_name.to_string_lossy().ends_with(".jsonl") =>
             {
                 SafeArchiveEntry::Session {
                     folder: folder.to_string_lossy().to_string(),
@@ -1526,7 +1539,8 @@ pub fn import_backup(archive_path: String) -> Result<ImportResult, String> {
                 let titles_file = titles_path().ok_or("HOME not set")?;
                 let current_raw = fs::read_to_string(&titles_file).ok();
                 let (mut current_map, parsed_current) = match current_raw {
-                    Some(raw) => match serde_json::from_str::<serde_json::Map<String, Value>>(&raw) {
+                    Some(raw) => match serde_json::from_str::<serde_json::Map<String, Value>>(&raw)
+                    {
                         Ok(map) => (map, true),
                         Err(_) => (serde_json::Map::new(), false),
                     },
@@ -1614,7 +1628,8 @@ mod tests {
     static HOME_LOCK: Mutex<()> = Mutex::new(());
 
     fn temp_dir(prefix: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("claude-deck-{}-{}", prefix, uuid::Uuid::new_v4()));
+        let dir =
+            std::env::temp_dir().join(format!("claude-deck-{}-{}", prefix, uuid::Uuid::new_v4()));
         fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -1639,7 +1654,9 @@ mod tests {
     }
 
     fn lock_home(home_dir: &Path) -> (MutexGuard<'static, ()>, HomeGuard) {
-        let lock = HOME_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        let lock = HOME_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let old_home = std::env::var("HOME").ok();
         std::env::set_var("HOME", home_dir);
         (lock, HomeGuard(old_home))
@@ -1734,7 +1751,11 @@ mod tests {
         );
 
         let info = scan_session_file(&file_path).expect("scan should succeed");
-        assert_eq!(info.message_count, 6, "expected 1+3+2 blocks, got {}", info.message_count);
+        assert_eq!(
+            info.message_count, 6,
+            "expected 1+3+2 blocks, got {}",
+            info.message_count
+        );
     }
 
     #[test]
@@ -1742,7 +1763,10 @@ mod tests {
         let home_dir = temp_dir("search-home");
         let (_home_lock, _home_guard) = lock_home(&home_dir);
 
-        let project_dir = home_dir.join(".claude").join("projects").join("-tmp-project");
+        let project_dir = home_dir
+            .join(".claude")
+            .join("projects")
+            .join("-tmp-project");
         let file_path = project_dir.join("session-1.jsonl");
         write_file(
             &file_path,
@@ -1757,8 +1781,14 @@ mod tests {
         let hits = search_sessions("read".into(), Some(10));
         let value = serde_json::to_value(hits.first().expect("expected at least one hit")).unwrap();
 
-        assert!(value.get("entry_kind").is_some(), "expected entry_kind in serialized search hit: {value:?}");
-        assert!(value.get("tool_name").is_some(), "expected tool_name in serialized search hit: {value:?}");
+        assert!(
+            value.get("entry_kind").is_some(),
+            "expected entry_kind in serialized search hit: {value:?}"
+        );
+        assert!(
+            value.get("tool_name").is_some(),
+            "expected tool_name in serialized search hit: {value:?}"
+        );
     }
 
     #[test]
@@ -1832,7 +1862,10 @@ mod tests {
 
         let missing_err = export_project(
             "missing-folder".into(),
-            home_dir.join("missing.tar.gz").to_string_lossy().to_string(),
+            home_dir
+                .join("missing.tar.gz")
+                .to_string_lossy()
+                .to_string(),
         )
         .unwrap_err();
         let empty_err = export_project(
@@ -1899,10 +1932,12 @@ mod tests {
         );
         assert_eq!(dir_err, "output path is a directory");
         assert!(
-            failing_err.contains("Permission denied")
-                || failing_err.contains("permission denied")
+            failing_err.contains("Permission denied") || failing_err.contains("permission denied")
         );
-        assert!(!part_path.exists(), "temporary part file should be cleaned up");
+        assert!(
+            !part_path.exists(),
+            "temporary part file should be cleaned up"
+        );
     }
 
     #[test]
